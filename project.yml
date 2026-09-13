@@ -1,0 +1,68 @@
+name: Poise
+options:
+  bundleIdPrefix: com.koliokolev
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+packages:
+  PoiseKit:
+    path: Packages/PoiseKit
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: D6937U28B4
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_STRICT_CONCURRENCY: complete
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1"
+  configs:
+    Release:
+      SWIFT_OPTIMIZATION_LEVEL: -O
+      COPY_PHASE_STRIP: YES
+      DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+
+targets:
+  Poise:
+    type: application
+    platform: iOS
+    sources:
+      - path: App/Poise
+    dependencies:
+      - package: PoiseKit
+        product: PoiseKit
+    info:
+      path: App/Poise/Info.plist
+      properties:
+        CFBundleName: Poise
+        CFBundleDisplayName: Poise
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        ITSAppUsesNonExemptEncryption: false
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.koliokolev.poise
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        INFOPLIST_KEY_UIUserInterfaceStyle: Automatic
+
+schemes:
+  Poise:
+    build:
+      targets:
+        Poise: all
+    run:
+      config: Debug
+    test:
+      config: Debug
