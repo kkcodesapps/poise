@@ -23,4 +23,4 @@ Packages/*/.build/
 *.p8
 *.p12
 *.mobileprovision
-Supabase/.temp/
+supabase/.temp/

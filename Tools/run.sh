@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 
 CONFIG="${1:-Debug}"
 SHOT="${2:-}"
-SIM="${POISE_SIM:-iPhone 16 Pro}"
+SIM="${POISE_SIM:-iPhone 17 Pro}"
 BUNDLE="com.koliokolev.poise"
 
 "$PWD/Tools/build.sh" "$CONFIG" -quiet

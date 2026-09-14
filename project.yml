@@ -9,6 +9,12 @@ options:
 packages:
   PoiseKit:
     path: Packages/PoiseKit
+  Supabase:
+    url: https://github.com/supabase/supabase-swift
+    from: "2.55.0"
+  LinkKit:
+    url: https://github.com/plaid/plaid-link-ios
+    from: "7.1.0"
 
 configs:
   Debug: debug
@@ -38,6 +44,10 @@ targets:
     dependencies:
       - package: PoiseKit
         product: PoiseKit
+      - package: Supabase
+        product: Supabase
+      - package: LinkKit
+        product: LinkKit
     info:
       path: App/Poise/Info.plist
       properties:
