@@ -8,17 +8,24 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: Theme.Spacing.s12) {
-                    VerdictCard(verdict: model.verdict, linked: model.hasLinkedBank)
+                    VerdictCard(verdict: model.verdict, linked: model.hasLinkedBank, linking: model.isLinking) {
+                        Task { await model.link() }
+                    }
                     if let last = model.lastSync {
                         Text("as of \(last, style: .relative) ago")
                             .font(Theme.Font.caption)
                             .foregroundStyle(Theme.Text.tertiary)
                     }
+                    Feed(transactions: model.transactions, accounts: model.accounts)
                 }
                 .padding(.horizontal, Theme.Spacing.s16)
                 .padding(.top, Theme.Spacing.s4)
             }
             .background(Theme.Bg.base)
+            .refreshable { await model.refresh() }
+            .alert("Something went wrong", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
+                Button("OK") { model.errorMessage = nil }
+            } message: { Text(model.errorMessage ?? "") }
             .navigationTitle("Home")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -40,6 +47,8 @@ struct HomeView: View {
 struct VerdictCard: View {
     let verdict: Verdict?
     let linked: Bool
+    var linking = false
+    var onLink: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s16) {
@@ -67,8 +76,9 @@ struct VerdictCard: View {
                 .font(Theme.Font.verdictMD)
                 .foregroundStyle(Theme.Text.secondary)
             if !linked {
-                Button("Link a bank") { }
+                Button(linking ? "Opening…" : "Link a bank", action: onLink)
                     .buttonStyle(.primary)
+                    .disabled(linking)
             }
         }
     }
@@ -167,4 +177,157 @@ extension Double {
 
 #Preview("Empty") {
     VerdictCard(verdict: nil, linked: false).padding().background(Theme.Bg.base)
+}
+
+
+/// The feed: newest first, grouped by the day the user actually paid. Transfers and refunds are shown, never counted.
+struct Feed: View {
+    let transactions: [PoiseKit.Transaction]
+    let accounts: [Account]
+
+    private var days: [(Date, [PoiseKit.Transaction])] {
+        let cal = Calendar.current
+        let groups = Dictionary(grouping: transactions) { cal.startOfDay(for: $0.displayDate) }
+        return groups.keys.sorted(by: >).map { ($0, groups[$0]!.sorted { $0.displayDate > $1.displayDate }) }
+    }
+
+    var body: some View {
+        LazyVStack(spacing: 0) {
+            ForEach(days, id: \.0) { day, rows in
+                DayHeader(day: day, total: rows.filter { $0.kind == .spend || $0.kind == .untracked }.reduce(0) { $0 + $1.amount })
+                VStack(spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { i, t in
+                        TransactionRowView(transaction: t, account: accounts.first { $0.id == t.accountID })
+                        if i < rows.count - 1 { Divider().overlay(Theme.Border.subtle).padding(.leading, 68) }
+                    }
+                }
+                .background(Theme.Bg.elevated, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous).strokeBorder(Theme.Border.subtle))
+            }
+        }
+    }
+}
+
+struct DayHeader: View {
+    let day: Date
+    let total: Decimal
+
+    var body: some View {
+        HStack {
+            Text(label).font(Theme.Font.footnote.weight(.semibold)).foregroundStyle(Theme.Text.tertiary)
+            Spacer()
+            if total != 0 { Text(total.money2).font(Theme.Font.moneyXS).foregroundStyle(Theme.Text.tertiary) }
+        }
+        .padding(.top, Theme.Spacing.s20).padding(.bottom, Theme.Spacing.s8).padding(.horizontal, Theme.Spacing.s16)
+    }
+
+    private var label: String {
+        let cal = Calendar.current
+        if cal.isDateInToday(day) { return "TODAY" }
+        if cal.isDateInYesterday(day) { return "YESTERDAY" }
+        return day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()).uppercased()
+    }
+}
+
+struct TransactionRowView: View {
+    let transaction: PoiseKit.Transaction
+    let account: Account?
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.s12) {
+            ZStack {
+                Circle().fill(circleFill)
+                if transaction.pending { Circle().strokeBorder(Theme.Border.strong, style: StrokeStyle(lineWidth: 1.5, dash: [3, 3])) }
+                Image(systemName: symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(iconColor)
+            }
+            .frame(width: 40, height: 40)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(transaction.merchant).font(Theme.Font.headline).foregroundStyle(titleColor).lineLimit(1)
+                Text(subtitle).font(Theme.Font.footnote).foregroundStyle(subtitleColor).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(amountText).font(Theme.Font.moneyMD).foregroundStyle(amountColor)
+                Text(transaction.pending ? "PENDING" : transaction.displayDate.formatted(date: .omitted, time: .shortened))
+                    .font(transaction.pending ? Theme.Font.caption2Strong : Theme.Font.caption)
+                    .foregroundStyle(Theme.Text.tertiary)
+            }
+        }
+        .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
+    }
+
+    private var subtitle: String {
+        var parts: [String] = []
+        switch transaction.kind {
+        case .spend: parts.append(transaction.category?.title ?? "Uncategorized")
+        case .income: parts.append("Income")
+        case .transfer: parts.append("Transfer · not spending")
+        case .ccPayment: parts.append("Card payment · not spending")
+        case .refund: parts.append("Refund")
+        case .untracked: return "Tap to tag what this was"
+        }
+        if transaction.pending, transaction.authorizedDate != nil { parts.append("authorized \(transaction.displayDate.formatted(.dateTime.weekday(.abbreviated)))") }
+        else if let account { parts.append("\(account.name) ••\(account.mask ?? "")") }
+        return parts.joined(separator: " · ")
+    }
+    private var amountText: String { (transaction.amount > 0 ? "+" : "") + transaction.amount.money2 }
+    private var amountColor: Color {
+        if transaction.pending { return Theme.Money.pending }
+        switch transaction.kind {
+        case .income, .refund: return Theme.Money.in
+        case .transfer, .ccPayment: return Theme.Text.tertiary
+        default: return Theme.Text.primary
+        }
+    }
+    private var titleColor: Color { transaction.kind == .transfer || transaction.kind == .ccPayment ? Theme.Text.secondary : Theme.Text.primary }
+    private var subtitleColor: Color { transaction.kind == .untracked ? Theme.Accent.default : Theme.Text.secondary }
+    private var circleFill: Color {
+        if transaction.pending { return .clear }
+        switch transaction.kind {
+        case .income, .refund: return Theme.Status.goodBg
+        case .untracked: return Theme.Accent.subtle
+        default: return Theme.Bg.subtle
+        }
+    }
+    private var iconColor: Color {
+        if transaction.pending { return Theme.Text.tertiary }
+        switch transaction.kind {
+        case .income, .refund: return Theme.Status.good
+        case .transfer, .ccPayment: return Theme.Text.tertiary
+        case .untracked: return Theme.Accent.default
+        default: return Theme.Text.primary
+        }
+    }
+    private var symbol: String {
+        switch transaction.kind {
+        case .income: return "arrow.down.left"
+        case .transfer: return "arrow.left.arrow.right"
+        case .ccPayment: return "creditcard"
+        case .refund: return "arrow.uturn.backward"
+        case .untracked: return "questionmark"
+        case .spend:
+            switch transaction.category {
+            case .home: return "house"
+            case .groceries: return "cart"
+            case .dining: return "fork.knife"
+            case .transport: return "car"
+            case .shopping: return "bag"
+            case .subscriptions: return "arrow.clockwise"
+            case .health: return "heart"
+            case .fun: return "ticket"
+            case .other, .none: return "ellipsis"
+            }
+        }
+    }
+}
+
+extension Decimal {
+    /// "−$62.40" — cents kept, for rows.
+    var money2: String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = "USD"
+        formatter.minusSign = "−"
+        return formatter.string(from: self as NSDecimalNumber) ?? "\(self)"
+    }
 }
