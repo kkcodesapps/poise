@@ -8,6 +8,7 @@ public enum VerdictStatus: String, Codable, Sendable {
 public struct Crunch: Hashable, Sendable {
     public let date: Date
     public let shortfall: Decimal
+    public init(date: Date, shortfall: Decimal) { self.date = date; self.shortfall = shortfall }
 }
 
 /// Where you stand against everything due before the next payday.
@@ -16,6 +17,7 @@ public struct Ahead: Hashable, Sendable {
     public let amount: Decimal
     public let through: Date
     public let crunch: Crunch?
+    public init(amount: Decimal, through: Date, crunch: Crunch?) { self.amount = amount; self.through = through; self.crunch = crunch }
 }
 
 /// What stayed with you this month: income − net spend, and where that lands at month-end.
@@ -25,12 +27,14 @@ public struct Kept: Hashable, Sendable {
     public let expectedIncome: Decimal
     /// Projected kept ÷ expected income for the month. Uses expected income so early-month never reads negative.
     public let onPacePercent: Double
+    public init(keptSoFar: Decimal, expectedIncome: Decimal, onPacePercent: Double) { self.keptSoFar = keptSoFar; self.expectedIncome = expectedIncome; self.onPacePercent = onPacePercent }
 }
 
 public struct Verdict: Hashable, Sendable {
     public let status: VerdictStatus
     public let ahead: Ahead
     public let kept: Kept
+    public init(status: VerdictStatus, ahead: Ahead, kept: Kept) { self.status = status; self.ahead = ahead; self.kept = kept }
 
     /// The status line. Positive at every size; when it's bad it's an instruction.
     public var sentence: String {
@@ -165,8 +169,8 @@ public enum VerdictEngine {
             acc + s.amount * Decimal(s.occurrences(after: input.now, through: month.end.addingTimeInterval(-1), calendar: cal).count)
         }
         let projectedSpend = netSpend + avgDailyWants * daysRemaining + billsRemaining
-        let projectedKept = expected - projectedSpend
+        let projectedKept = (expected - projectedSpend).roundedToCents
         let onPace = expected > 0 ? Double(truncating: (projectedKept / expected) as NSDecimalNumber) : 0
-        return Kept(keptSoFar: keptSoFar, expectedIncome: expected, onPacePercent: onPace)
+        return Kept(keptSoFar: keptSoFar.roundedToCents, expectedIncome: expected, onPacePercent: onPace)
     }
 }

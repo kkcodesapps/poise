@@ -29,8 +29,10 @@ public struct Transaction: Identifiable, Hashable, Codable, Sendable {
     public var category: SpendCategory?
     /// The other side of a transfer or card payment, or the charge a refund nets against.
     public var pairID: String?
+    /// Bank / ATM / foreign-transaction / interest charges, as reported by the provider.
+    public var isFee: Bool
 
-    public init(id: String, accountID: String, amount: Decimal, merchant: String, authorizedDate: Date? = nil, date: Date, pending: Bool = false, kind: TransactionKind = .spend, category: SpendCategory? = nil, pairID: String? = nil) {
+    public init(id: String, accountID: String, amount: Decimal, merchant: String, authorizedDate: Date? = nil, date: Date, pending: Bool = false, kind: TransactionKind = .spend, category: SpendCategory? = nil, pairID: String? = nil, isFee: Bool = false) {
         self.id = id
         self.accountID = accountID
         self.amount = amount
@@ -41,10 +43,20 @@ public struct Transaction: Identifiable, Hashable, Codable, Sendable {
         self.kind = kind
         self.category = category
         self.pairID = pairID
+        self.isFee = isFee
     }
 
     /// The day the user actually paid: authorized when known, else the provider's date.
     public var displayDate: Date { authorizedDate ?? date }
     public var isOutflow: Bool { amount < 0 }
     public var magnitude: Decimal { amount < 0 ? -amount : amount }
+
+    /// Normalized merchant key used for grouping and rules: lower-case letters and spaces only.
+    public var merchantKey: String { Transaction.merchantKey(merchant) }
+
+    public static func merchantKey(_ name: String) -> String {
+        let lowered = name.lowercased()
+        let cleaned = lowered.map { $0.isLetter || $0 == " " ? $0 : " " }
+        return String(cleaned).split(separator: " ").joined(separator: " ")
+    }
 }
