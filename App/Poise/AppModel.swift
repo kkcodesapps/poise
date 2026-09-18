@@ -1,4 +1,5 @@
 import Foundation
+import AuthenticationServices
 import Observation
 import OSLog
 import Supabase
@@ -35,12 +36,17 @@ final class AppModel {
     var settings = Repository.Settings()
     var lastSync: Date?
     var institutions: [String] = []
+    var relinkNeeded: [Repository.Item] = []
+    private var lastForegroundRefresh: Date?
     var isLoading = false
     var isLinking = false
     var errorMessage: String?
     var selectedTransaction: PoiseKit.Transaction?
     var showProfile = false
     var showReview = false
+    var isLocked = false
+    var isAnonymous = true
+    var accountName: String?
 
     private let repository = Repository(client: Backend.client)
     private var linker: BankLinker?
@@ -73,7 +79,7 @@ final class AppModel {
         }
     }
 
-    func reload() async {
+    func reload(retry: Bool = true) async {
         isLoading = true; defer { isLoading = false }
         do {
             async let snap = repository.load()
@@ -83,10 +89,13 @@ final class AppModel {
             raw = s.transactions
             lastSync = s.lastSync
             institutions = s.institutions
+            relinkNeeded = s.relinkNeeded
             settings = p
             recompute()
         } catch {
             log.error("reload failed: \(error.localizedDescription, privacy: .public)")
+            // One quiet retry covers token-refresh clock skew ("JWT issued at future") and a dropped connection.
+            if retry { try? await Task.sleep(for: .seconds(2)); await reload(retry: false); return }
             errorMessage = error.localizedDescription
         }
     }
@@ -102,6 +111,82 @@ final class AppModel {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Repairs a broken bank login (Plaid Link update mode), then marks the item healthy server-side.
+    func relink(_ item: Repository.Item) async {
+        guard !isLinking else { return }
+        isLinking = true; defer { isLinking = false }
+        do {
+            let linker = self.linker ?? BankLinker(client: Backend.client)
+            self.linker = linker
+            if try await linker.link(relink: item.id) != nil { await refresh(trigger: "relink") }
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    func readSession() async {
+        let session = try? await Backend.client.auth.session
+        isAnonymous = session?.user.isAnonymous ?? true
+        accountName = (session?.user.userMetadata["full_name"]?.stringValue).flatMap { $0.isEmpty ? nil : $0 } ?? session?.user.email
+    }
+
+    // MARK: account
+
+    func signInWithApple(_ credential: ASAuthorizationAppleIDCredential, nonce: String) async {
+        do {
+            try await Auth.signIn(with: credential, nonce: nonce, client: Backend.client)
+            await readSession()
+            await reload()
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    func signOut() async {
+        try? await Backend.client.auth.signOut()
+        resetState()
+        await start()
+    }
+
+    /// Revokes every bank connection and deletes the user server-side, then starts over as a fresh anonymous user.
+    func deleteEverything() async {
+        do {
+            try await Backend.client.functions.invoke("delete-account")
+            try? await Backend.client.auth.signOut()
+            UserDefaults.standard.removeObject(forKey: "acknowledgedInsights")
+            acknowledged = []
+            resetState()
+            await start()
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func resetState() {
+        accounts = []; raw = []; transactions = []; streams = []; verdict = nil; pace = nil; cashflow = []; insights = []; reviewCards = []
+        lastSync = nil; institutions = []; relinkNeeded = []; settings = Repository.Settings(); isAnonymous = true; accountName = nil
+    }
+
+    /// Everything Poise holds about the user, as one JSON file for the share sheet.
+    func exportFile() throws -> URL {
+        struct Export: Encodable { let exportedAt: Date; let accounts: [Account]; let transactions: [PoiseKit.Transaction]; let streams: [RecurringStream] }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(Export(exportedAt: .now, accounts: accounts, transactions: transactions, streams: streams))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("poise-export-\(Date.now.formatted(.iso8601.year().month().day())).json")
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+
+    // MARK: lock
+
+    func unlock() async {
+        guard isLocked else { return }
+        if await Auth.authenticate() { isLocked = false }
+    }
+
+    /// App came to the foreground: refresh if the last one is older than the policy allows (15 min), else just reload.
+    func becameActive() async {
+        if settings.faceID, !isLocked { isLocked = true; await unlock() }
+        guard hasLinkedBank else { return }
+        if let last = lastForegroundRefresh, Date.now.timeIntervalSince(last) < 15 * 60 { await reload(); return }
+        lastForegroundRefresh = .now
+        await refresh(trigger: "foreground")
     }
 
     /// Foreground / pull-to-refresh: fresh balances now; new transactions arrive by webhook and a later reload.

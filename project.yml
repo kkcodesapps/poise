@@ -56,10 +56,15 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         ITSAppUsesNonExemptEncryption: false
+        NSFaceIDUsageDescription: Poise uses Face ID to keep your finances private when you open the app.
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+    entitlements:
+      path: App/Poise/Poise.entitlements
+      properties:
+        com.apple.developer.applesignin: [Default]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.koliokolev.poise
