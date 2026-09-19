@@ -9,6 +9,22 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: Theme.Spacing.s12) {
+                    ForEach(model.relinkNeeded) { item in
+                        Button { Task { await model.relink(item) } } label: {
+                            HStack(spacing: Theme.Spacing.s12) {
+                                Image(systemName: "exclamationmark.triangle").font(.system(size: 17, weight: .medium)).foregroundStyle(Theme.Status.track)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(item.institution) needs you to sign in again").font(Theme.Font.subheadStrong).foregroundStyle(Theme.Text.primary)
+                                    Text("Balances may be out of date until you do.").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
+                                }
+                                Spacer(minLength: 8)
+                                Text("Relink").font(Theme.Font.subheadStrong).foregroundStyle(Theme.Accent.default)
+                            }
+                            .padding(Theme.Spacing.s12).padding(.horizontal, 4)
+                            .background(Theme.Status.trackBg, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
                     VerdictCard(verdict: model.verdict, insight: model.topInsight, linked: model.hasLinkedBank, linking: model.isLinking,
                                 onLink: { Task { await model.link() } },
                                 onInsight: { insight in model.tab = destination(for: insight) })
@@ -190,7 +206,7 @@ struct TransactionRowView: View {
         HStack(spacing: Theme.Spacing.s12) {
             IconCircle(symbol: symbol, fill: circleFill, color: iconColor, dashed: transaction.pending)
             VStack(alignment: .leading, spacing: 2) {
-                Text(transaction.merchant).font(Theme.Font.headline).foregroundStyle(titleColor).lineLimit(1)
+                Text(transaction.displayMerchant).font(Theme.Font.headline).foregroundStyle(titleColor).lineLimit(1)
                 Text(subtitle).font(Theme.Font.footnote).foregroundStyle(subtitleColor).lineLimit(1)
             }
             Spacer(minLength: 8)

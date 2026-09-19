@@ -109,11 +109,11 @@ struct StreamRowView: View {
         HStack(spacing: Theme.Spacing.s12) {
             ZStack {
                 Circle().fill(Theme.Bg.subtle)
-                Text(String(stream.merchant.prefix(1)).uppercased()).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary)
+                Text(String(stream.displayMerchant.prefix(1)).uppercased()).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary)
             }
             .frame(width: 40, height: 40)
             VStack(alignment: .leading, spacing: 2) {
-                Text(stream.merchant).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1)
+                Text(stream.displayMerchant).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1)
                 Text("\(stream.cadence.label.capitalized) · next \(stream.nextExpected.formatted(.dateTime.month(.abbreviated).day()))")
                     .font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
             }
@@ -210,5 +210,28 @@ extension Date {
         if s < 3600 { return "as of \(s / 60) min ago" }
         if s < 86_400 { return "as of \(s / 3600) h ago" }
         return "as of \(s / 86_400) d ago"
+    }
+}
+
+
+extension PoiseKit.Transaction {
+    /// Raw bank descriptors shout ("ACH ELECTRONIC CREDIT *//"); show them like a name.
+    var displayMerchant: String { merchant.prettyMerchant }
+}
+
+extension RecurringStream {
+    var displayMerchant: String { merchant.prettyMerchant }
+}
+
+extension String {
+    var prettyMerchant: String {
+        var s = self.replacingOccurrences(of: #"[*#/]+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let letters = s.filter(\.isLetter)
+        if letters.count > 3, letters.allSatisfy(\.isUppercase) {
+            s = s.capitalized.replacingOccurrences(of: "Ach ", with: "ACH ").replacingOccurrences(of: "Atm ", with: "ATM ")
+        }
+        return s
     }
 }

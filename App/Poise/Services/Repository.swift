@@ -12,7 +12,10 @@ struct Repository {
         var streams: [RecurringStream]
         var lastSync: Date?
         var institutions: [String]
+        var relinkNeeded: [Item]
     }
+
+    struct Item: Sendable, Identifiable, Hashable { let id: String; let institution: String; let status: String }
 
     func load(days: Int = 90) async throws -> Snapshot {
         let since = Calendar.current.date(byAdding: .day, value: -days, to: .now) ?? .now
@@ -29,7 +32,8 @@ struct Repository {
         let (a, t, s, items) = try await (accountRows, txnRows, streamRows, itemRows)
         let lastSync = items.compactMap { $0.last_synced_at.flatMap(Self.timestamp.date(from:)) }.max()
         return Snapshot(accounts: a.map(\.model), transactions: t.map(\.model), streams: s.map(\.model), lastSync: lastSync,
-                        institutions: Array(Set(items.compactMap(\.institution_name))).sorted())
+                        institutions: Array(Set(items.compactMap(\.institution_name))).sorted(),
+                        relinkNeeded: items.filter { $0.status == "relink" }.map { Item(id: $0.id.uuidString, institution: $0.institution_name ?? "A bank", status: $0.status) })
     }
 
     // MARK: rows → models

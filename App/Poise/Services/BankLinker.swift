@@ -15,13 +15,20 @@ final class BankLinker {
     private struct LinkResult: Sendable { let publicToken: String; let institutionID: String; let institutionName: String }
 
     private struct LinkTokenResponse: Decodable { let link_token: String }
+    private struct LinkTokenBody: Encodable { let item_id: String? }
     private struct ExchangeBody: Encodable { let public_token: String; let institution: Institution?; struct Institution: Encodable { let id: String; let name: String } }
     private struct ExchangeResponse: Decodable { let item_id: String; let accounts: Int }
 
-    /// Returns nil when the user closes Link without finishing.
-    func link() async throws -> Outcome? {
-        let token: LinkTokenResponse = try await client.functions.invoke("plaid-link-token")
+    /// Returns nil when the user closes Link without finishing. Pass an item id to run Link in update mode (relink).
+    func link(relink itemID: String? = nil) async throws -> Outcome? {
+        let token: LinkTokenResponse = try await client.functions.invoke("plaid-link-token", options: FunctionInvokeOptions(body: LinkTokenBody(item_id: itemID)))
         guard let result = try await present(token: token.link_token) else { return nil }
+        if let itemID {
+            // Update mode: the item already exists; Link just repaired the login. Tell the server to mark it healthy and resync.
+            struct RepairBody: Encodable { let item_id: String }
+            try await client.functions.invoke("plaid-exchange", options: FunctionInvokeOptions(body: RepairBody(item_id: itemID)))
+            return Outcome(itemID: itemID, accounts: 0)
+        }
         let institution = ExchangeBody.Institution(id: result.institutionID, name: result.institutionName)
         let body = ExchangeBody(public_token: result.publicToken, institution: institution)
         let res: ExchangeResponse = try await client.functions.invoke("plaid-exchange", options: FunctionInvokeOptions(body: body))

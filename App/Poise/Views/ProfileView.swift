@@ -1,4 +1,5 @@
 import SwiftUI
+import AuthenticationServices
 import PoiseKit
 
 /// Behind the profile button: accounts, settings, the weekly review, and the door to link another bank.
@@ -28,6 +29,8 @@ struct ProfileView: View {
                     Text("Read-only, always. Poise can see balances and transactions; it can never move money.").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
                         .multilineTextAlignment(.center).padding(.horizontal, Theme.Spacing.s24).padding(.top, Theme.Spacing.s8)
 
+                    SectionHeader(title: "Account")
+                    AccountSection()
                     SectionHeader(title: "Money")
                     SettingsSection()
                     SectionHeader(title: "Review")
@@ -38,11 +41,8 @@ struct ProfileView: View {
                         .disabled(model.reviewCards.isEmpty)
                     }
                     .padding(.horizontal, Theme.Spacing.s16)
-                    SectionHeader(title: "Data")
-                    Card {
-                        NavRow(symbol: "arrow.clockwise", label: "Refresh balances now", value: model.lastSync.map { $0.freshness } ?? "") { Task { await model.refresh(trigger: "foreground") } }
-                    }
-                    .padding(.horizontal, Theme.Spacing.s16)
+                    SectionHeader(title: "Privacy & data")
+                    PrivacySection()
                     Text("Poise 0.1.0 · sandbox").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).padding(.top, Theme.Spacing.s24)
                 }
                 .padding(.bottom, Theme.Spacing.s32)
@@ -175,5 +175,102 @@ struct DatePickerRow: View {
             }
         }
         .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44)
+    }
+}
+
+
+/// Anonymous until the user says otherwise. Sign in with Apple keeps everything already linked.
+struct AccountSection: View {
+    @Environment(AppModel.self) private var model
+    @State private var nonce = Auth.makeNonce()
+
+    var body: some View {
+        Card {
+            if model.isAnonymous {
+                VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
+                    Text("You're using Poise without an account. Sign in with Apple to keep your banks linked across devices and reinstalls.")
+                        .font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
+                    SignInWithAppleButton(.signIn) { request in
+                        request.requestedScopes = [.fullName]
+                        request.nonce = Auth.sha256(nonce)
+                    } onCompletion: { result in
+                        switch result {
+                        case .success(let auth):
+                            if let credential = auth.credential as? ASAuthorizationAppleIDCredential {
+                                let n = nonce
+                                Task { await model.signInWithApple(credential, nonce: n) }
+                                nonce = Auth.makeNonce()
+                            }
+                        case .failure(let error):
+                            if (error as? ASAuthorizationError)?.code != .canceled { model.errorMessage = error.localizedDescription }
+                        }
+                    }
+                    .signInWithAppleButtonStyle(.black)
+                    .frame(height: 50)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+                }
+                .padding(Theme.Spacing.s16)
+            } else {
+                HStack(spacing: Theme.Spacing.s12) {
+                    IconCircle(symbol: "person", size: 40)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.accountName ?? "Signed in with Apple").font(Theme.Font.headline).foregroundStyle(Theme.Text.primary)
+                        Text("Signed in with Apple").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
+                    }
+                    Spacer()
+                    Button("Sign out") { Task { await model.signOut() } }.font(Theme.Font.subheadStrong).tint(Theme.Accent.default)
+                }
+                .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
+            }
+        }
+        .padding(.horizontal, Theme.Spacing.s16)
+    }
+}
+
+/// Face ID, export, refresh, and the door marked delete.
+struct PrivacySection: View {
+    @Environment(AppModel.self) private var model
+    @State private var exportURL: URL?
+    @State private var confirmDelete = false
+
+    var body: some View {
+        Card {
+            ToggleRow(label: "Face ID when opening", isOn: Binding(get: { model.settings.faceID }, set: { on in var s = model.settings; s.faceID = on; Task { await model.save(s) } }))
+                .disabled(!Auth.canUseBiometrics)
+            RowDivider()
+            NavRow(symbol: "arrow.clockwise", label: "Refresh balances now", value: model.lastSync.map { $0.freshness } ?? "") { Task { await model.refresh(trigger: "foreground") } }
+            RowDivider()
+            if let url = exportURL {
+                ShareLink(item: url) {
+                    HStack(spacing: Theme.Spacing.s12) {
+                        Image(systemName: "square.and.arrow.up").font(.system(size: 17, weight: .medium)).foregroundStyle(Theme.Text.secondary).frame(width: 24)
+                        Text("Share my data (JSON)").font(Theme.Font.body).foregroundStyle(Theme.Text.primary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44).contentShape(Rectangle())
+                }
+            } else {
+                NavRow(symbol: "square.and.arrow.down", label: "Export my data", value: "JSON") {
+                    do { exportURL = try model.exportFile() } catch { model.errorMessage = error.localizedDescription }
+                }
+            }
+            RowDivider()
+            Button(role: .destructive) { confirmDelete = true } label: {
+                HStack(spacing: Theme.Spacing.s12) {
+                    Image(systemName: "trash").font(.system(size: 17, weight: .medium)).foregroundStyle(Theme.Status.heads).frame(width: 24)
+                    Text("Delete everything").font(Theme.Font.body).foregroundStyle(Theme.Status.heads)
+                    Spacer()
+                }
+                .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .confirmationDialog("Delete everything?", isPresented: $confirmDelete, titleVisibility: .visible) {
+                Button("Delete my banks and data", role: .destructive) { Task { await model.deleteEverything() } }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Every bank connection is revoked and every transaction Poise holds is deleted. This can't be undone.")
+            }
+        }
+        .padding(.horizontal, Theme.Spacing.s16)
     }
 }
