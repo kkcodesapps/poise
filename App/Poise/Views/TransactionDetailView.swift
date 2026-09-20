@@ -45,7 +45,7 @@ struct TransactionDetailView: View {
                     if sameMerchantCount > 0, changed {
                         Toggle(isOn: $always) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Always treat \(transaction.merchant) this way").font(Theme.Font.body).foregroundStyle(Theme.Text.primary)
+                                Text("Always treat \(transaction.displayMerchant) this way").font(Theme.Font.body).foregroundStyle(Theme.Text.primary)
                                 Text("Applies to \(sameMerchantCount) other charge\(sameMerchantCount == 1 ? "" : "s") and everything that comes after.").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
                             }
                         }
@@ -56,7 +56,7 @@ struct TransactionDetailView: View {
                 .padding(.bottom, Theme.Spacing.s32)
             }
             .background(Theme.Bg.base)
-            .navigationTitle(transaction.merchant)
+            .navigationTitle(transaction.displayMerchant)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.tint(Theme.Accent.default) }

@@ -18,6 +18,16 @@ DEVNAME=$(echo "$LINE" | awk -F'  +' '{print $1}')
 UDID=$(xcrun devicectl device info details --device "$COREID" 2>/dev/null | grep -E "•\s*udid:" | sed -E "s/.*udid: *//")
 [ -n "$UDID" ] || { echo "could not read the hardware UDID for $DEVNAME"; exit 1; }
 
+# Provisioning updates (registering the App ID's capabilities, minting profiles) authenticate with an App Store Connect
+# API key when one is installed, so no Apple ID has to be signed into Xcode on this Mac.
+AUTH=()
+KEY=$(ls ~/.appstoreconnect/private_keys/AuthKey_*.p8 2>/dev/null | head -1 || true)
+if [ -n "${KEY:-}" ]; then
+  KEY_ID=$(basename "$KEY" .p8 | sed 's/^AuthKey_//')
+  ISSUER="${ASC_ISSUER_ID:-f7b84198-2497-4bd0-9756-251815113d7a}"
+  AUTH=(-authenticationKeyPath "$KEY" -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER")
+fi
+
 xcodegen generate --quiet
 xcodebuild \
   -project Poise.xcodeproj \
@@ -25,7 +35,7 @@ xcodebuild \
   -configuration "$CONFIG" \
   -destination "platform=iOS,id=$UDID" \
   -derivedDataPath "$DEST/DerivedData" \
-  -allowProvisioningUpdates \
+  -allowProvisioningUpdates "${AUTH[@]}" \
   CONFIGURATION_BUILD_DIR="$DEST/$CONFIG-iphoneos" \
   build -quiet
 
