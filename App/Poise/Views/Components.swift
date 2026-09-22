@@ -81,6 +81,9 @@ extension Insight.Kind {
         case .positive: "sparkles"
         case .newStream: "arrow.clockwise"
         case .renewal: "clock"
+        case .watchTriggered: "eye"
+        case .refundOverdue: "arrow.uturn.backward"
+        case .refundArrived: "checkmark"
         }
     }
 }
@@ -186,21 +189,6 @@ extension Double {
     var percent: String { "\(Int((self * 100).rounded()))%" }
 }
 
-extension SpendCategory {
-    var symbol: String {
-        switch self {
-        case .home: "house"
-        case .groceries: "cart"
-        case .dining: "fork.knife"
-        case .transport: "car"
-        case .shopping: "bag"
-        case .subscriptions: "arrow.clockwise"
-        case .health: "heart"
-        case .fun: "ticket"
-        case .other: "ellipsis"
-        }
-    }
-}
 
 extension Date {
     /// "as of just now" / "as of 2 min ago" / "as of 3 h ago"

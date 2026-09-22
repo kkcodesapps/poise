@@ -8,7 +8,8 @@ struct ProfileView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
+        @Bindable var model = model
+        NavigationStack(path: $model.profilePath) {
             ScrollView {
                 VStack(spacing: 0) {
                     SectionHeader(title: "Accounts")
@@ -33,8 +34,12 @@ struct ProfileView: View {
                     AccountSection()
                     SectionHeader(title: "Money")
                     SettingsSection()
-                    SectionHeader(title: "Review")
+                    SectionHeader(title: "Organize")
                     Card {
+                        NavigationLink(value: "categories") { NavRowLabel(symbol: "tag", label: "Categories", value: "\(model.categories.all.count)") }.buttonStyle(.plain)
+                        RowDivider()
+                        NavigationLink(value: "watching") { NavRowLabel(symbol: "bookmark", label: "Watching", value: model.openWatches.isEmpty ? "" : "\(model.openWatches.count) open") }.buttonStyle(.plain)
+                        RowDivider()
                         NavRow(symbol: "sparkles", label: "This week's review", value: model.reviewCards.isEmpty ? "After the first sync" : "5 cards") {
                             dismiss(); model.showReview = true
                         }
@@ -50,6 +55,9 @@ struct ProfileView: View {
             .background(Theme.Bg.base)
             .navigationTitle("You")
             .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(for: String.self) { route in
+                if route == "categories" { CategoriesView() } else { WatchingView() }
+            }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.fontWeight(.semibold).tint(Theme.Accent.default) } }
         }
     }
@@ -84,24 +92,28 @@ extension AccountRole {
     var order: Int { switch self { case .spending: 0; case .savings: 1; case .credit: 2; case .other: 3 } }
 }
 
+struct NavRowLabel: View {
+    let symbol: String
+    let label: String
+    var value: String = ""
+    var body: some View {
+        HStack(spacing: Theme.Spacing.s12) {
+            Image(systemName: symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(Theme.Text.secondary).frame(width: 24)
+            Text(label).font(Theme.Font.body).foregroundStyle(Theme.Text.primary)
+            Spacer()
+            Text(value).font(Theme.Font.body).foregroundStyle(Theme.Text.secondary).lineLimit(1)
+            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.Text.tertiary)
+        }
+        .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44).contentShape(Rectangle())
+    }
+}
+
 struct NavRow: View {
     let symbol: String
     let label: String
     var value: String = ""
     var action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: Theme.Spacing.s12) {
-                Image(systemName: symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(Theme.Text.secondary).frame(width: 24)
-                Text(label).font(Theme.Font.body).foregroundStyle(Theme.Text.primary)
-                Spacer()
-                Text(value).font(Theme.Font.body).foregroundStyle(Theme.Text.secondary).lineLimit(1)
-                Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.Text.tertiary)
-            }
-            .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44).contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
+    var body: some View { Button(action: action) { NavRowLabel(symbol: symbol, label: label, value: value) }.buttonStyle(.plain) }
 }
 
 /// Payday, credit cards, kept target, committed savings, notification preferences.

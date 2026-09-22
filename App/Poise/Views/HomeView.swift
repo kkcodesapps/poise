@@ -40,6 +40,7 @@ struct HomeView: View {
                         .background(Theme.Status.goodBg, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
                         .padding(.top, Theme.Spacing.s8)
                     }
+                    if !model.openWatches.isEmpty { WatchingCard().padding(.top, Theme.Spacing.s8) }
                     if model.hasLinkedBank {
                         Feed(transactions: model.transactions, accounts: model.accounts) { model.selectedTransaction = $0 }
                     }
@@ -64,6 +65,7 @@ struct HomeView: View {
             .sheet(item: $model.selectedTransaction) { t in TransactionDetailView(transaction: t) }
             .sheet(isPresented: $model.showProfile) { ProfileView() }
             .fullScreenCover(isPresented: $model.showReview) { WeeklyReviewView() }
+            .navigationDestination(isPresented: $model.showWatching) { WatchingView() }
         }
     }
 
@@ -171,6 +173,7 @@ struct Feed: View {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { i, t in
                         Button { onSelect(t) } label: { TransactionRowView(transaction: t, account: accounts.first { $0.id == t.accountID }) }
                             .buttonStyle(.plain)
+                            .contextMenu { RowContextMenu(transaction: t) }
                         if i < rows.count - 1 { RowDivider() }
                     }
                 }
@@ -199,12 +202,21 @@ struct DayHeader: View {
 }
 
 struct TransactionRowView: View {
+    @Environment(AppModel.self) private var model
     let transaction: PoiseKit.Transaction
     let account: Account?
+
+    private var watch: Watch? { model.watch(for: transaction.id) ?? (model.watches.first { $0.kind == .merchant && $0.resolvedTransactionID == transaction.id }) }
 
     var body: some View {
         HStack(spacing: Theme.Spacing.s12) {
             IconCircle(symbol: symbol, fill: circleFill, color: iconColor, dashed: transaction.pending)
+                .overlay(alignment: .bottomTrailing) {
+                    if watch != nil {
+                        ZStack { Circle().fill(Theme.Accent.default); Image(systemName: "bookmark.fill").font(.system(size: 8, weight: .bold)).foregroundStyle(.white) }
+                            .frame(width: 18, height: 18).overlay(Circle().strokeBorder(Theme.Bg.elevated, lineWidth: 2)).offset(x: 3, y: 3)
+                    }
+                }
             VStack(alignment: .leading, spacing: 2) {
                 Text(transaction.displayMerchant).font(Theme.Font.headline).foregroundStyle(titleColor).lineLimit(1)
                 Text(subtitle).font(Theme.Font.footnote).foregroundStyle(subtitleColor).lineLimit(1)
@@ -212,7 +224,10 @@ struct TransactionRowView: View {
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {
                 Text(amountText).font(Theme.Font.moneyMD).foregroundStyle(amountColor)
-                if transaction.pending { Text("PENDING").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary) }
+                if let w = watch, w.status == .triggered { Text("CHARGED AGAIN").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Status.heads) }
+                else if let w = watch, w.status == .overdue { Text("OVERDUE").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Status.track) }
+                else if watch != nil { Text("WATCHING").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Accent.default) }
+                else if transaction.pending { Text("PENDING").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary) }
                 else if transaction.isFee { Text("FEE").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Status.heads) }
             }
         }
@@ -223,11 +238,11 @@ struct TransactionRowView: View {
     private var subtitle: String {
         var parts: [String] = []
         switch transaction.kind {
-        case .spend: parts.append(transaction.category?.title ?? "Uncategorized")
+        case .spend: parts.append(model.categories.name(transaction.categoryID))
         case .income: parts.append("Income")
         case .transfer: parts.append("Transfer · not spending")
         case .ccPayment: parts.append("Card payment · not spending")
-        case .refund: parts.append(transaction.pairID == nil ? "Refund" : "Refund · nets against a charge")
+        case .refund: parts.append(model.watches.contains { $0.resolvedTransactionID == transaction.id && $0.kind == .refund } ? "Refund · watch closed" : transaction.pairID == nil ? "Refund" : "Refund · nets against a charge")
         case .untracked: return "Tap to tag what this was"
         }
         if transaction.pending, transaction.authorizedDate != nil { parts.append("authorized \(transaction.displayDate.formatted(.dateTime.weekday(.abbreviated)))") }
@@ -268,7 +283,30 @@ struct TransactionRowView: View {
         case .ccPayment: "creditcard"
         case .refund: "arrow.uturn.backward"
         case .untracked: "questionmark"
-        case .spend: transaction.category?.symbol ?? "ellipsis"
+        case .spend: model.categories.symbol(transaction.categoryID)
         }
+    }
+}
+
+/// Long-press on a feed row: the two watch actions first.
+struct RowContextMenu: View {
+    @Environment(AppModel.self) private var model
+    let transaction: PoiseKit.Transaction
+    var body: some View {
+        if transaction.kind == .spend || transaction.kind == .untracked {
+            if let w = model.watch(for: transaction.id), w.kind == .refund {
+                Button("Stop waiting for a refund", systemImage: "arrow.uturn.backward") { Task { await model.removeWatch(w) } }
+            } else {
+                Button("Waiting for a refund", systemImage: "arrow.uturn.backward") { Task { await model.addWatch(Watch(kind: .refund, transactionID: transaction.id, merchant: transaction.merchant, expectedAmount: transaction.magnitude)) } }
+            }
+            if model.isWatched(merchantKey: transaction.merchantKey) {
+                Button("Stop watching \(transaction.displayMerchant)", systemImage: "eye.slash") { Task { if let w = model.watches.first(where: { $0.kind == .merchant && $0.matcher == transaction.merchantKey && $0.status.isOpen }) { await model.removeWatch(w) } } }
+            } else {
+                Button("Tell me if they charge again", systemImage: "eye") { Task { await model.addWatch(Watch(kind: .merchant, transactionID: transaction.id, merchant: transaction.merchant)) } }
+            }
+            Divider()
+        }
+        Button("Change category", systemImage: "slider.horizontal.3") { model.selectedTransaction = transaction }
+        if transaction.kind != .transfer { Button("Not spending", systemImage: "minus") { Task { await model.correct(transaction, kind: .transfer, categoryID: nil, always: false) } } }
     }
 }

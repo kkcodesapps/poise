@@ -13,6 +13,7 @@ struct RootView: View {
                     case .leaks: LeaksView()
                     case .pace: PaceView()
                     case .next14: Next14View()
+                    case .whereTab: WhereView()
                     }
                 }
             }

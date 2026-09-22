@@ -42,7 +42,7 @@ struct PaceView: View {
         let last = Calendar.current.date(byAdding: .month, value: -1, to: .now)!.formatted(.dateTime.month(.wide))
         guard p.lastMonthTotal > 0 else { return "First full month on Poise — next month you'll see this against \(last)." }
         let diff = p.overLastMonth
-        if diff > 0 { return "\(diff.money) over \(last)\(p.topMover.map { ", mostly \($0.category.title)" } ?? "")." }
+        if diff > 0 { return "\(diff.money) over \(last)\(p.topMover.map { ", mostly \($0.name)" } ?? "")." }
         if diff < 0 { return "\((-diff).money) under \(last). Keep the rhythm." }
         return "Right on \(last)'s pace."
     }
@@ -98,9 +98,9 @@ struct PaceView: View {
             let rows = Array(p.movers.prefix(5))
             ForEach(Array(rows.enumerated()), id: \.element.id) { i, m in
                 HStack(spacing: Theme.Spacing.s12) {
-                    IconCircle(symbol: m.category.symbol, size: 36)
+                    IconCircle(symbol: m.symbol, size: 36)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(m.category.title).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary)
+                        Text(m.name).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary)
                         Text("\(m.thisMonth.money) this month").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
                     }
                     Spacer()
