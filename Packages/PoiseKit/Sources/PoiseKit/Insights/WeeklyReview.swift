@@ -13,13 +13,13 @@ public struct ReviewCard: Hashable, Sendable, Identifiable {
 }
 
 public enum WeeklyReview {
-    public static func cards(transactions: [Transaction], streams: [RecurringStream], insights: [Insight], cashflow: [CashflowDay], verdict: Verdict, now: Date, calendar: Calendar = .current) -> [ReviewCard] {
+    public static func cards(transactions: [Transaction], streams: [RecurringStream], insights: [Insight], cashflow: [CashflowDay], verdict: Verdict, now: Date, calendar: Calendar = .current, categories: CategorySet = .builtIn) -> [ReviewCard] {
         let weekEnd = calendar.startOfDay(for: now)
         let weekStart = calendar.date(byAdding: .day, value: -7, to: weekEnd)!
         let prevStart = calendar.date(byAdding: .day, value: -7, to: weekStart)!
         let week = DateInterval(start: weekStart, end: weekEnd.addingTimeInterval(86_400))
         let prev = DateInterval(start: prevStart, end: weekStart)
-        func isSpend(_ t: Transaction) -> Bool { t.kind == .spend || t.kind == .untracked }
+        func isSpend(_ t: Transaction) -> Bool { (t.kind == .spend || t.kind == .untracked) && categories.lens(t.categoryID) != .kept }
         func kept(_ i: DateInterval) -> Decimal {
             transactions.filter { i.contains($0.displayDate) }.reduce(0) { acc, t in
                 acc + (t.kind == .income ? t.amount : isSpend(t) ? -t.magnitude : t.kind == .refund ? t.magnitude : 0)
@@ -33,11 +33,11 @@ public enum WeeklyReview {
                                 tone: diff >= 0 ? .good : .neutral))
 
         let weekSpend = transactions.filter { week.contains($0.displayDate) && isSpend($0) }
-        let byCat = Dictionary(grouping: weekSpend) { $0.category ?? .other }.mapValues { $0.reduce(Decimal(0)) { $0 + $1.magnitude } }
+        let byCat = Dictionary(grouping: weekSpend) { categories.resolve($0.categoryID).id }.mapValues { $0.reduce(Decimal(0)) { $0 + $1.magnitude } }
         if let (cat, total) = byCat.max(by: { $0.value < $1.value }) {
-            let merchants = Dictionary(grouping: weekSpend.filter { ($0.category ?? .other) == cat }) { $0.merchant }.mapValues { $0.reduce(Decimal(0)) { $0 + $1.magnitude } }
+            let merchants = Dictionary(grouping: weekSpend.filter { categories.resolve($0.categoryID).id == cat }) { $0.merchant }.mapValues { $0.reduce(Decimal(0)) { $0 + $1.magnitude } }
             let top = merchants.max(by: { $0.value < $1.value })
-            cards.append(ReviewCard(id: "biggest", eyebrow: "2 OF 5 · BIGGEST", value: total.moneyString(cents: false), title: "\(cat.title)\(top.map { ", mostly \($0.key)" } ?? "")",
+            cards.append(ReviewCard(id: "biggest", eyebrow: "2 OF 5 · BIGGEST", value: total.moneyString(cents: false), title: "\(categories.name(cat))\(top.map { ", mostly \($0.key)" } ?? "")",
                                     body: top.map { "\($0.value.moneyString(cents: false)) at \($0.key) across \(merchants.count) merchant\(merchants.count == 1 ? "" : "s") this week." } ?? "", tone: .neutral))
         }
         if let leak = insights.first(where: { [.priceUp, .fee, .duplicate, .renewal].contains($0.kind) }) {

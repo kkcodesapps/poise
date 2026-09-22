@@ -2,7 +2,7 @@ import Foundation
 
 /// The one thing worth saying. Ranked so Home shows the top one and Leaks / Pace / Review get the rest.
 public struct Insight: Hashable, Sendable, Identifiable {
-    public enum Kind: String, Sendable, Codable { case crunch, duplicate, priceUp, fee, paceOverrun, positive, newStream, renewal }
+    public enum Kind: String, Sendable, Codable { case crunch, duplicate, priceUp, fee, paceOverrun, positive, newStream, renewal, watchTriggered, refundOverdue, refundArrived }
     public enum Tone: String, Sendable { case heads, neutral, good }
 
     public let id: String
@@ -55,8 +55,8 @@ public enum InsightEngine {
                                body: "\(money(fees.total)) in fees this year so far.", rank: 4))
         }
         if let mover = input.pace.topMover, input.pace.overLastMonth > 0, mover.delta > 0 {
-            out.append(Insight(id: "pace-\(mover.category.rawValue)-\(cal.component(.month, from: input.now))", kind: .paceOverrun, tone: .neutral,
-                               title: "\(mover.category.title) is \(money(mover.delta)) over last month's pace",
+            out.append(Insight(id: "pace-\(mover.categoryID)-\(cal.component(.month, from: input.now))", kind: .paceOverrun, tone: .neutral,
+                               title: "\(mover.name) is \(money(mover.delta)) over last month's pace",
                                body: "On pace for \(money(input.pace.projected)) — \(money(input.pace.overLastMonth)) over last month.", rank: 5))
         }
         if input.verdict.kept.onPacePercent >= 0.3 {

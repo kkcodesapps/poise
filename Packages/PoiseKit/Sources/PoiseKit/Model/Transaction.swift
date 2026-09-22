@@ -26,13 +26,14 @@ public struct Transaction: Identifiable, Hashable, Codable, Sendable {
     public var date: Date
     public var pending: Bool
     public var kind: TransactionKind
-    public var category: SpendCategory?
+    /// Category id: a built-in's raw value ("dining") or a custom category's UUID. See `CategorySet`.
+    public var categoryID: String?
     /// The other side of a transfer or card payment, or the charge a refund nets against.
     public var pairID: String?
     /// Bank / ATM / foreign-transaction / interest charges, as reported by the provider.
     public var isFee: Bool
 
-    public init(id: String, accountID: String, amount: Decimal, merchant: String, authorizedDate: Date? = nil, date: Date, pending: Bool = false, kind: TransactionKind = .spend, category: SpendCategory? = nil, pairID: String? = nil, isFee: Bool = false) {
+    public init(id: String, accountID: String, amount: Decimal, merchant: String, authorizedDate: Date? = nil, date: Date, pending: Bool = false, kind: TransactionKind = .spend, category: SpendCategory? = nil, categoryID: String? = nil, pairID: String? = nil, isFee: Bool = false) {
         self.id = id
         self.accountID = accountID
         self.amount = amount
@@ -41,9 +42,15 @@ public struct Transaction: Identifiable, Hashable, Codable, Sendable {
         self.date = date
         self.pending = pending
         self.kind = kind
-        self.category = category
+        self.categoryID = categoryID ?? category?.rawValue
         self.pairID = pairID
         self.isFee = isFee
+    }
+
+    /// The built-in category, when the id is one. Custom categories come back nil — use `CategorySet` for those.
+    public var category: SpendCategory? {
+        get { categoryID.flatMap(SpendCategory.init(rawValue:)) }
+        set { categoryID = newValue?.rawValue }
     }
 
     /// The day the user actually paid: authorized when known, else the provider's date.

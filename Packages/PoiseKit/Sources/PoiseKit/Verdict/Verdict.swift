@@ -66,8 +66,9 @@ public struct VerdictInput: Sendable {
     /// Unacknowledged duplicates, fees, price changes. Any of them is a heads-up.
     public var anomalies: Int
     public var calendar: Calendar
+    public var categories: CategorySet
 
-    public init(accounts: [Account], transactions: [Transaction], streams: [RecurringStream], now: Date, nextPayday: Date? = nil, expectedIncome: Decimal? = nil, keptTarget: Double = 0.20, committedSavings: Decimal = 0, anomalies: Int = 0, calendar: Calendar = .current) {
+    public init(accounts: [Account], transactions: [Transaction], streams: [RecurringStream], now: Date, nextPayday: Date? = nil, expectedIncome: Decimal? = nil, keptTarget: Double = 0.20, committedSavings: Decimal = 0, anomalies: Int = 0, calendar: Calendar = .current, categories: CategorySet = .builtIn) {
         self.accounts = accounts
         self.transactions = transactions
         self.streams = streams
@@ -78,6 +79,7 @@ public struct VerdictInput: Sendable {
         self.committedSavings = committedSavings
         self.anomalies = anomalies
         self.calendar = calendar
+        self.categories = categories
     }
 }
 
@@ -145,8 +147,10 @@ public enum VerdictEngine {
             switch t.kind {
             case .income: income += t.amount
             case .spend, .untracked:
+                let lens = input.categories.lens(t.categoryID)
+                if lens == .kept { break }          // a "kept" category is money set aside, never spend
                 spend += t.magnitude
-                if (t.category?.lens ?? .wants) == .wants { wants += t.magnitude }
+                if lens == .wants { wants += t.magnitude }
             case .refund: refunds += t.amount
             case .transfer, .ccPayment: break
             }

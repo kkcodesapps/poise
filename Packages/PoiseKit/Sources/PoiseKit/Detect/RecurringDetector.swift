@@ -8,7 +8,7 @@ public enum RecurringDetector {
         (.weekly, 5...9, 3), (.biweekly, 12...16, 2), (.monthly, 26...35, 2), (.quarterly, 80...100, 2), (.annual, 350...380, 2),
     ]
 
-    public static func detect(_ transactions: [Transaction], now: Date, calendar: Calendar = .current) -> [RecurringStream] {
+    public static func detect(_ transactions: [Transaction], now: Date, calendar: Calendar = .current, categories: CategorySet = .builtIn) -> [RecurringStream] {
         let eligible = transactions.filter { !$0.pending && ($0.kind == .spend || $0.kind == .income) }
         let groups = Dictionary(grouping: eligible) { "\($0.kind.rawValue)|\($0.merchantKey)" }
         var streams: [RecurringStream] = []
@@ -36,7 +36,7 @@ public enum RecurringDetector {
             if cutoff < calendar.startOfDay(for: now) { continue }
             while next < calendar.startOfDay(for: now) { next = cadence.next(after: next, calendar: calendar) }
 
-            let kind: StreamKind = last.kind == .income ? .income : streamKind(for: last)
+            let kind: StreamKind = last.kind == .income ? .income : streamKind(for: last, categories: categories)
             let previous = prev.magnitude == last.magnitude ? nil : prev.magnitude
             streams.append(RecurringStream(id: key, merchant: last.merchant, kind: kind, cadence: cadence, amount: last.magnitude,
                                            previousAmount: previous, lastSeen: lastSeen, nextExpected: next))
@@ -44,12 +44,9 @@ public enum RecurringDetector {
         return streams.sorted { $0.nextExpected < $1.nextExpected }
     }
 
-    /// Bills are the things you can't easily cancel; everything else recurring is a subscription.
-    static func streamKind(for t: Transaction) -> StreamKind {
-        switch t.category {
-        case .home, .health, .transport: .bill
-        default: .subscription
-        }
+    /// Bills are the things you can't easily cancel (needs); everything else recurring is a subscription.
+    static func streamKind(for t: Transaction, categories: CategorySet) -> StreamKind {
+        categories.lens(t.categoryID) == .needs ? .bill : .subscription
     }
 }
 
