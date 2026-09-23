@@ -83,8 +83,9 @@ export async function syncItem(db: SupabaseClient, item: ItemRow): Promise<{ add
       }];
     });
     if (rows.length) {
-      const { error } = await db.from("transactions").upsert(rows, { onConflict: "account_id,provider_txn_id" });
+      const { data: written, error } = await db.from("transactions").upsert(rows, { onConflict: "account_id,provider_txn_id" }).select("id, merchant, posted_date, kind, pending");
       if (error) throw error;
+      await triggerMerchantWatches(db, item.user_id, written ?? []);
     }
     if (res.removed.length) {
       const { error } = await db.from("transactions")
@@ -102,4 +103,15 @@ export async function syncItem(db: SupabaseClient, item: ItemRow): Promise<{ add
     if (error) throw error;
   }
   return totals;
+}
+
+
+/** A charge from a merchant the user asked to be told about: mark the watch triggered (the push rides on this later). */
+async function triggerMerchantWatches(db: SupabaseClient, userID: string, rows: { id: string; merchant: string; posted_date: string; kind: string }[]) {
+  const { data: watches } = await db.from("watches").select("id, matcher, created_at").eq("user_id", userID).eq("kind", "merchant").eq("status", "watching");
+  if (!watches?.length) return;
+  for (const w of watches) {
+    const hit = rows.find((r) => (r.kind === "spend" || r.kind === "untracked") && merchantKey(r.merchant) === w.matcher && new Date(r.posted_date) > new Date(w.created_at));
+    if (hit) await db.from("watches").update({ status: "triggered", resolved_at: new Date().toISOString(), resolved_transaction_id: hit.id }).eq("id", w.id);
+  }
 }

@@ -25,7 +25,7 @@ struct PaceAndInsightTests {
         #expect(pace.wants == Fix.money("200") && pace.needs == Fix.money("150"))
         // projected = 350 + (200 / 15) × 15 remaining days = 550
         #expect(pace.projected == Fix.money("550"))
-        #expect(pace.movers.first?.category == SpendCategory.dining && pace.movers.first?.delta == Fix.money("100"))
+        #expect(pace.movers.first?.categoryID == "dining" && pace.movers.first?.delta == Fix.money("100"))
         #expect(pace.cumulative.count == 30 && pace.cumulative[14].thisMonth == Fix.money("350") && pace.cumulative[15].thisMonth == nil)
     }
 

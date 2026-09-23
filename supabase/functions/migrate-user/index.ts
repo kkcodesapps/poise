@@ -4,7 +4,7 @@ import { admin, userFrom } from "../_shared/db.ts";
 
 // An anonymous user just signed in with Apple. The caller holds BOTH sessions (new one in the header, old one in the body),
 // which is the proof of ownership: move every row to the permanent user and retire the anonymous one.
-const TABLES = ["items", "accounts", "transactions", "merchant_rules", "streams", "insights", "devices"];
+const TABLES = ["items", "accounts", "transactions", "merchant_rules", "streams", "insights", "devices", "categories", "watches"];
 
 Deno.serve(async (req) => {
   const user = await userFrom(req);

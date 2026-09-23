@@ -20,7 +20,7 @@ enum Fix {
     static let card = Account(id: "card", name: "Sapphire", mask: "0930", role: .credit, current: money("-612.40"))
     static var accounts: [Account] { [checking, savings, card] }
 
-    static func tx(_ id: String, _ account: String, _ amount: String, _ merchant: String, on date: Date, authorized: Date? = nil, pending: Bool = false, kind: TransactionKind = .spend, category: SpendCategory? = nil) -> Transaction {
-        Transaction(id: id, accountID: account, amount: money(amount), merchant: merchant, authorizedDate: authorized, date: date, pending: pending, kind: kind, category: category)
+    static func tx(_ id: String, _ account: String, _ amount: String, _ merchant: String, on date: Date, authorized: Date? = nil, pending: Bool = false, kind: TransactionKind = .spend, category: SpendCategory? = nil, categoryID: String? = nil) -> Transaction {
+        Transaction(id: id, accountID: account, amount: money(amount), merchant: merchant, authorizedDate: authorized, date: date, pending: pending, kind: kind, category: category, categoryID: categoryID)
     }
 }
