@@ -11,6 +11,8 @@ Deno.serve(async (req) => {
   const { item_id } = await req.json().catch(() => ({})) as { item_id?: string };
   try {
     const base: Record<string, unknown> = { user: { client_user_id: user.id }, client_name: "Poise", country_codes: ["US"], language: "en", webhook };
+    // OAuth banks (Chase, Discover, …) bounce back through a Universal Link. Only sent once the URI is registered with Plaid.
+    const redirect = Deno.env.get("PLAID_REDIRECT_URI"); if (redirect) base.redirect_uri = redirect;
     if (item_id) {
       // Update mode: repair an existing login. The token is bound to the item's access token, so no products list.
       const { data: item } = await admin().from("items").select("access_token_enc").eq("id", item_id).eq("user_id", user.id).single();

@@ -65,6 +65,7 @@ targets:
       path: App/Poise/Poise.entitlements
       properties:
         com.apple.developer.applesignin: [Default]
+        com.apple.developer.associated-domains: ["applinks:kkolev.com"]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.koliokolev.poise
