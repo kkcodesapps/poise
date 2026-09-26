@@ -7,12 +7,15 @@ struct Repository {
     let client: SupabaseClient
 
     struct Snapshot: Sendable {
+        /// Accounts that count. Hidden ones are kept apart so the engine never sees them.
         var accounts: [Account]
+        var hiddenAccounts: [Account]
         var transactions: [Transaction]
         var streams: [RecurringStream]
         var lastSync: Date?
         var institutions: [String]
         var relinkNeeded: [Item]
+        var walletLinked: Bool
         var customCategories: [PoiseKit.Category]
         var watches: [Watch]
     }
@@ -21,33 +24,42 @@ struct Repository {
 
     func load(days: Int = 90) async throws -> Snapshot {
         let since = Calendar.current.date(byAdding: .day, value: -days, to: .now) ?? .now
+        // Accounts first: hidden ones decide which transactions are worth fetching at all.
         async let accountRows: [AccountRow] = client.from("accounts").select().execute().value
-        async let txnRows: [TransactionRow] = client.from("transactions").select()
+        async let itemRows: [ItemRow] = client.from("items").select("id, provider, status, last_synced_at, institution_name").execute().value
+        let (a, items) = try await (accountRows, itemRows)
+        let institution = Dictionary(uniqueKeysWithValues: items.map { ($0.id.uuidString, $0.institution_name) })
+        let all = a.map { $0.model(institution: institution[$0.item_id.uuidString] ?? nil) }
+        let hidden = all.filter(\.hidden)
+
+        var txnQuery = client.from("transactions").select()
             .is("deleted_at", value: nil)
             .gte("display_date", value: Self.day.string(from: since))
-            .order("display_date", ascending: false)
-            .limit(2000)
-            .execute().value
+        if !hidden.isEmpty { txnQuery = txnQuery.not("account_id", operator: .in, value: "(\(hidden.map(\.id).joined(separator: ",")))") }
+        async let txnRows: [TransactionRow] = txnQuery.order("display_date", ascending: false).limit(2000).execute().value
         async let streamRows: [StreamRow] = client.from("streams").select().eq("status", value: "active").execute().value
-        async let itemRows: [ItemRow] = client.from("items").select("id, status, last_synced_at, institution_name").execute().value
         async let catRows: [CategoryRow] = client.from("categories").select().order("sort").execute().value
         async let watchRows: [WatchRow] = client.from("watches").select().order("created_at", ascending: false).execute().value
 
-        let (a, t, s, items, cats, ws) = try await (accountRows, txnRows, streamRows, itemRows, catRows, watchRows)
+        let (t, s, cats, ws) = try await (txnRows, streamRows, catRows, watchRows)
         let lastSync = items.compactMap { $0.last_synced_at.flatMap(Self.date(from:)) }.max()
-        return Snapshot(accounts: a.map(\.model), transactions: t.map(\.model), streams: s.map(\.model), lastSync: lastSync,
+        return Snapshot(accounts: all.filter { !$0.hidden }, hiddenAccounts: hidden, transactions: t.map(\.model), streams: s.map(\.model), lastSync: lastSync,
                         institutions: Array(Set(items.compactMap(\.institution_name))).sorted(),
                         relinkNeeded: items.filter { $0.status == "relink" }.map { Item(id: $0.id.uuidString, institution: $0.institution_name ?? "A bank", status: $0.status) },
+                        walletLinked: items.contains { $0.provider == "financekit" },
                         customCategories: cats.map(\.model), watches: ws.map(\.model))
     }
 
     // MARK: rows → models
 
     private struct AccountRow: Decodable {
-        let id: UUID, name: String, mask: String?, role: String, available: Double?, current: Double, currency: String
-        var model: Account {
+        let id: UUID, item_id: UUID, name: String, mask: String?, role: String, available: Double?, current: Double, currency: String
+        let hidden: Bool, hidden_at: String?, balance_at: String?
+        func model(institution: String?) -> Account {
             Account(id: id.uuidString, name: name, mask: mask, role: AccountRole(rawValue: role) ?? .other,
-                    available: available.map(Repository.decimal), current: Repository.decimal(current), currency: currency)
+                    available: available.map(Repository.decimal), current: Repository.decimal(current), currency: currency,
+                    institution: institution, itemID: item_id.uuidString, hidden: hidden,
+                    hiddenAt: hidden_at.flatMap(Repository.date(from:)), balanceAt: balance_at.flatMap(Repository.date(from:)))
         }
     }
 
@@ -71,7 +83,7 @@ struct Repository {
         }
     }
 
-    private struct ItemRow: Decodable { let id: UUID, status: String, last_synced_at: String?, institution_name: String? }
+    private struct ItemRow: Decodable { let id: UUID, provider: String, status: String, last_synced_at: String?, institution_name: String? }
 
     private struct CategoryRow: Codable {
         var id: UUID?, user_id: String?, name: String, symbol: String, lens: String, sort: Int
@@ -156,6 +168,19 @@ struct Repository {
         try await client.from("accounts").update(Patch(role: role.rawValue)).eq("id", value: accountID).execute()
     }
 
+    /// The user's own flag; nothing on the sync path writes it, so it survives every refresh.
+    func update(accountID: String, hidden: Bool) async throws {
+        struct Patch: Encodable { let hidden: Bool; let hidden_at: String? }
+        let at = hidden ? Date.now.formatted(.iso8601) : nil
+        try await client.from("accounts").update(Patch(hidden: hidden, hidden_at: at)).eq("id", value: accountID).execute()
+    }
+
+    /// Drops one institution: revoked at the provider, then its accounts and rows go with it.
+    func disconnect(itemID: String) async throws {
+        struct Body: Encodable { let item_id: String }
+        try await client.functions.invoke("disconnect-item", options: FunctionInvokeOptions(body: Body(item_id: itemID)))
+    }
+
     // MARK: settings
 
     struct Settings: Codable, Sendable, Equatable {
@@ -168,6 +193,7 @@ struct Repository {
         var notifyWeekly = true
         var faceID = false
         var categoryLens: [String: String] = [:]     // built-in id → lens override
+        var dismissedStreams: [String] = []          // "Not a subscription" — stream ids the detector should keep quiet about
     }
 
     private struct SettingsRow: Codable {
@@ -179,6 +205,7 @@ struct Repository {
         var notif_prefs: [String: Bool]
         var faceid: Bool
         var category_lens: [String: String]?
+        var dismissed_streams: [String]?
     }
 
     func loadSettings() async throws -> Settings {
@@ -186,14 +213,15 @@ struct Repository {
         guard let r = rows.first else { return Settings() }
         return Settings(paydayOverride: r.payday_override.flatMap(Self.day.date(from:)), paysCardsInFull: r.pays_cc_in_full, keptTarget: r.kept_target,
                         committedSavings: Self.decimal(r.committed_savings), notifySpend: r.notif_prefs["spend"] ?? true,
-                        notifyHeadsUp: r.notif_prefs["heads_up"] ?? true, notifyWeekly: r.notif_prefs["weekly_review"] ?? true, faceID: r.faceid, categoryLens: r.category_lens ?? [:])
+                        notifyHeadsUp: r.notif_prefs["heads_up"] ?? true, notifyWeekly: r.notif_prefs["weekly_review"] ?? true, faceID: r.faceid, categoryLens: r.category_lens ?? [:],
+                        dismissedStreams: r.dismissed_streams ?? [])
     }
 
     func save(_ s: Settings) async throws {
         let session = try await client.auth.session
         let row = SettingsRow(user_id: session.user.id.uuidString, payday_override: s.paydayOverride.map(Self.day.string(from:)), pays_cc_in_full: s.paysCardsInFull,
                               kept_target: s.keptTarget, committed_savings: Double(truncating: s.committedSavings as NSDecimalNumber),
-                              notif_prefs: ["spend": s.notifySpend, "heads_up": s.notifyHeadsUp, "weekly_review": s.notifyWeekly], faceid: s.faceID, category_lens: s.categoryLens)
+                              notif_prefs: ["spend": s.notifySpend, "heads_up": s.notifyHeadsUp, "weekly_review": s.notifyWeekly], faceid: s.faceID, category_lens: s.categoryLens, dismissed_streams: s.dismissedStreams)
         try await client.from("settings").upsert(row, onConflict: "user_id").execute()
     }
 

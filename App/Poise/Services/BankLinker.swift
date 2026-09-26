@@ -40,13 +40,21 @@ final class BankLinker {
             .compactMap({ $0 as? UIWindowScene }).flatMap(\.windows).first(where: \.isKeyWindow)?.rootViewController else {
             throw BackendError.noWindow
         }
+        // Link must be presented from whatever is on top — the profile sheet, usually — not from the root, which is
+        // already presenting that sheet and would refuse a second presentation without telling anyone.
+        var top = vc
+        while let next = top.presentedViewController { top = next }
+        let presenter = top
+        let once = Once()
         return try await withCheckedThrowingContinuation { continuation in
             let config = LinkTokenConfiguration(
                 token: token,
                 onSuccess: { success in
+                    guard once.first() else { return }
                     continuation.resume(returning: LinkResult(publicToken: success.publicToken, institutionID: success.metadata.institution.id, institutionName: success.metadata.institution.name))
                 },
                 onExit: { exit in
+                    guard once.first() else { return }
                     if let error = exit.error { continuation.resume(throwing: BackendError.link(error.errorMessage)) }
                     else { continuation.resume(returning: nil) }
                 },
@@ -56,9 +64,14 @@ final class BankLinker {
             do {
                 let session = try Plaid.createPlaidLinkSession(configuration: config)
                 self.session = session
-                session.open(using: .viewController(vc))
+                session.open(using: .viewController(presenter))
+                // If nothing is on screen a moment later the presentation failed; say so rather than wait forever.
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(3))
+                    if presenter.presentedViewController == nil, once.first() { continuation.resume(throwing: BackendError.link("Couldn't open the bank picker. Try again.")) }
+                }
             } catch {
-                continuation.resume(throwing: BackendError.link(error.localizedDescription))
+                if once.first() { continuation.resume(throwing: BackendError.link(error.localizedDescription)) }
             }
         }
     }

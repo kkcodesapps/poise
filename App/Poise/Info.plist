@@ -24,13 +24,20 @@
 	<false/>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Poise uses Face ID to keep your finances private when you open the app.</string>
+	<key>NSFinancialDataUsageDescription</key>
+	<string>Poise reads your Apple Card, Apple Cash and Savings activity from Wallet so it counts alongside your other accounts. It stays in your own private record and is never sold or shared.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<false/>
 	</dict>
 	<key>UILaunchScreen</key>
-	<dict/>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+		<key>UIImageName</key>
+		<string>LaunchMark</string>
+	</dict>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
