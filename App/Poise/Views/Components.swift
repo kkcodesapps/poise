@@ -152,6 +152,38 @@ struct EmptyStateView: View {
     }
 }
 
+/// Pill selector used for categories and account roles.
+struct Chip: View {
+    let label: String
+    let symbol: String
+    let on: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol).font(.system(size: 12, weight: .medium))
+                Text(label).font(Theme.Font.footnote.weight(.semibold))
+            }
+            .foregroundStyle(on ? Theme.Accent.default : Theme.Text.secondary)
+            .padding(.horizontal, 12).frame(height: 32)
+            .background(on ? Theme.Accent.subtle : Theme.Bg.subtle, in: Capsule())
+            .overlay(Capsule().strokeBorder(on ? Theme.Accent.default : .clear))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Text-only, full-width — for the one destructive action at the bottom of a page.
+struct GhostButtonStyle: ButtonStyle {
+    var color: Color = Theme.Accent.default
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Theme.Font.headline)
+            .foregroundStyle(color.opacity(configuration.isPressed ? 0.6 : 1))
+            .frame(maxWidth: .infinity, minHeight: 50)
+    }
+}
+
 struct PrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -176,6 +208,7 @@ struct SecondaryButtonStyle: ButtonStyle {
 }
 
 extension ButtonStyle where Self == PrimaryButtonStyle { static var primary: PrimaryButtonStyle { PrimaryButtonStyle() } }
+extension ButtonStyle where Self == GhostButtonStyle { static var ghost: GhostButtonStyle { GhostButtonStyle() }; static func ghost(_ color: Color) -> GhostButtonStyle { GhostButtonStyle(color: color) } }
 extension ButtonStyle where Self == SecondaryButtonStyle { static var secondary: SecondaryButtonStyle { SecondaryButtonStyle() }; static var secondaryCompact: SecondaryButtonStyle { SecondaryButtonStyle(compact: true) } }
 
 extension Decimal {

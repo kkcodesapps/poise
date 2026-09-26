@@ -3,6 +3,7 @@ import PoiseKit
 
 struct HomeView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         @Bindable var model = model
@@ -25,9 +26,25 @@ struct HomeView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    VerdictCard(verdict: model.verdict, insight: model.topInsight, linked: model.hasLinkedBank, linking: model.isLinking,
-                                onLink: { Task { await model.link() } },
-                                onInsight: { insight in model.tab = destination(for: insight) })
+                    if model.walletAccessLost {
+                        Button { openURL(URL(string: UIApplication.openSettingsURLString)!) } label: {
+                            HStack(spacing: Theme.Spacing.s12) {
+                                Image(systemName: "exclamationmark.triangle").font(.system(size: 17, weight: .medium)).foregroundStyle(Theme.Status.track)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Poise can't read Wallet any more").font(Theme.Font.subheadStrong).foregroundStyle(Theme.Text.primary)
+                                    Text("Apple Card, Apple Cash and Savings stop here until access is back on.").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
+                                }
+                                Spacer(minLength: 8)
+                                Text("Settings").font(Theme.Font.subheadStrong).foregroundStyle(Theme.Accent.default)
+                            }
+                            .padding(Theme.Spacing.s12).padding(.horizontal, 4)
+                            .background(Theme.Status.trackBg, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    VerdictCard(verdict: model.verdict, insight: model.topInsight, linked: model.looksLinked, linking: model.isLinking,
+                                onLink: { model.startLink() },
+                                onInsight: { insight in model.open(insight) })
                     if let last = model.lastSync {
                         Text("\((model.institutions.isEmpty ? ["Accounts"] : model.institutions).joined(separator: " · ")) · \(last.freshness)")
                             .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).lineLimit(1)
@@ -41,7 +58,7 @@ struct HomeView: View {
                         .padding(.top, Theme.Spacing.s8)
                     }
                     if !model.openWatches.isEmpty { WatchingCard().padding(.top, Theme.Spacing.s8) }
-                    if model.hasLinkedBank {
+                    if model.looksLinked {
                         Feed(transactions: model.transactions, accounts: model.accounts) { model.selectedTransaction = $0 }
                     }
                 }
@@ -62,20 +79,10 @@ struct HomeView: View {
                     .accessibilityLabel("Accounts and settings")
                 }
             }
-            .sheet(item: $model.selectedTransaction) { t in TransactionDetailView(transaction: t) }
-            .sheet(isPresented: $model.showProfile) { ProfileView() }
-            .fullScreenCover(isPresented: $model.showReview) { WeeklyReviewView() }
             .navigationDestination(isPresented: $model.showWatching) { WatchingView() }
         }
     }
 
-    private func destination(for insight: Insight) -> AppModel.Tab {
-        switch insight.kind {
-        case .crunch: .next14
-        case .paceOverrun, .positive: .pace
-        default: .leaks
-        }
-    }
 }
 
 /// The hero: a status sentence, how far ahead you are, what you've kept, and the one thing to do.
@@ -205,6 +212,8 @@ struct TransactionRowView: View {
     @Environment(AppModel.self) private var model
     let transaction: PoiseKit.Transaction
     let account: Account?
+    /// Lists that aren't day-grouped (a subscription's charges) show the date under the amount.
+    var showsDate = false
 
     private var watch: Watch? { model.watch(for: transaction.id) ?? (model.watches.first { $0.kind == .merchant && $0.resolvedTransactionID == transaction.id }) }
 
@@ -229,6 +238,7 @@ struct TransactionRowView: View {
                 else if watch != nil { Text("WATCHING").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Accent.default) }
                 else if transaction.pending { Text("PENDING").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary) }
                 else if transaction.isFee { Text("FEE").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Status.heads) }
+                else if showsDate { Text(transaction.displayDate.formatted(.dateTime.month(.abbreviated).day()).uppercased()).font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary) }
             }
         }
         .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
@@ -246,7 +256,7 @@ struct TransactionRowView: View {
         case .untracked: return "Tap to tag what this was"
         }
         if transaction.pending, transaction.authorizedDate != nil { parts.append("authorized \(transaction.displayDate.formatted(.dateTime.weekday(.abbreviated)))") }
-        else if let account { parts.append("\(account.name) ••\(account.mask ?? "")") }
+        else if let account { parts.append(account.mask.map { "\(account.name) ••\($0)" } ?? account.name) }
         return parts.joined(separator: " · ")
     }
     private var amountText: String { (transaction.amount > 0 ? "+" : "") + transaction.amount.money2 }
