@@ -19,10 +19,23 @@ struct RootView: View {
             }
         }
         .tint(Theme.Accent.default)
+        // Sheets hang off the root so a row on any tab can open them.
+        .sheet(item: $model.selectedTransaction, onDismiss: { model.insightContext = nil }) { t in TransactionDetailView(transaction: t) }
+        .sheet(item: $model.selectedStream) { s in StreamDetailView(stream: s) }
+        .sheet(isPresented: $model.showProfile) { ProfileView() }
+        .fullScreenCover(isPresented: $model.showReview) { WeeklyReviewView() }
         .overlay { if model.isLocked { LockScreen() } }
+        .overlay { if model.launch != .ready { LaunchView().transition(.opacity) } }
+        .animation(.easeInOut(duration: 0.3), value: model.launch)
         .alert("Something went wrong", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
+        .confirmationDialog("What are you adding?", isPresented: $model.showLinkOptions, titleVisibility: .visible) {
+            Button("Apple Card, Apple Cash & Savings") { Task { await model.linkWallet() } }
+            Button("A bank or credit card") { Task { await model.link() } }
+        } message: {
+            Text("Apple accounts are read from Wallet on this iPhone. Banks and other cards connect through Plaid.")
+        }
     }
 }
 

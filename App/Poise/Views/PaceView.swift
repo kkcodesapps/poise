@@ -10,7 +10,7 @@ struct PaceView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 0) {
-                    if let pace = model.pace, model.hasLinkedBank {
+                    if let pace = model.pace, model.looksLinked {
                         headline(pace)
                         chartCard(pace)
                         SectionHeader(title: "What moved")

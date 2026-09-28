@@ -12,20 +12,30 @@ struct ProfileView: View {
         NavigationStack(path: $model.profilePath) {
             ScrollView {
                 VStack(spacing: 0) {
-                    SectionHeader(title: "Accounts")
-                    if model.accounts.isEmpty {
+                    if !model.hasLinkedBank {
+                        SectionHeader(title: "Accounts")
                         Card { EmptyStateView(symbol: "building.columns", title: "No bank linked yet", body: "Link the account you spend from first. Savings and cards can come after.") }.padding(.horizontal, Theme.Spacing.s16)
-                    } else {
+                    }
+                    ForEach(model.grouped(model.accounts)) { group in
+                        SectionHeader(title: group.institution)
                         Card {
-                            let rows = model.accounts.sorted { ($0.role.order, $0.name) < ($1.role.order, $1.name) }
-                            ForEach(Array(rows.enumerated()), id: \.element.id) { i, a in
-                                AccountRowView(account: a) { role in Task { await model.setRole(role, for: a) } }
-                                if i < rows.count - 1 { RowDivider() }
+                            ForEach(Array(group.accounts.enumerated()), id: \.element.id) { i, a in
+                                NavigationLink(value: "account:\(a.id)") { AccountRowView(account: a) }.buttonStyle(.plain)
+                                if i < group.accounts.count - 1 { RowDivider() }
                             }
                         }
                         .padding(.horizontal, Theme.Spacing.s16)
                     }
-                    Button(model.isLinking ? "Opening…" : model.accounts.isEmpty ? "Link a bank" : "Link another bank") { Task { await model.link() } }
+                    if !model.hiddenAccounts.isEmpty {
+                        SectionHeader(title: "Hidden")
+                        Card {
+                            NavigationLink(value: "hidden") { NavRowLabel(symbol: "eye.slash", label: "Hidden accounts", value: "\(model.hiddenAccounts.count)") }.buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, Theme.Spacing.s16)
+                        Text("Hidden accounts count nowhere. Tap any account to hide it or show it again.").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s8)
+                    }
+                    Button(model.isLinking ? "Opening…" : model.hasLinkedBank ? "Link another account" : "Link an account") { model.startLink() }
                         .buttonStyle(.secondary).disabled(model.isLinking).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s16)
                     Text("Read-only, always. Poise can see balances and transactions; it can never move money.").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
                         .multilineTextAlignment(.center).padding(.horizontal, Theme.Spacing.s24).padding(.top, Theme.Spacing.s8)
@@ -48,7 +58,7 @@ struct ProfileView: View {
                     .padding(.horizontal, Theme.Spacing.s16)
                     SectionHeader(title: "Privacy & data")
                     PrivacySection()
-                    Text("Poise 0.1.0 · sandbox").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).padding(.top, Theme.Spacing.s24)
+                    Text("Poise 0.1.0").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).padding(.top, Theme.Spacing.s24)
                 }
                 .padding(.bottom, Theme.Spacing.s32)
             }
@@ -56,40 +66,73 @@ struct ProfileView: View {
             .navigationTitle("You")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: String.self) { route in
-                if route == "categories" { CategoriesView() } else { WatchingView() }
+                if route == "categories" { CategoriesView() }
+                else if route == "hidden" { HiddenAccountsView() }
+                else if route.hasPrefix("account:") { AccountView(accountID: String(route.dropFirst("account:".count))) }
+                else { WatchingView() }
             }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.fontWeight(.semibold).tint(Theme.Accent.default) } }
         }
     }
 }
 
-struct AccountRowView: View {
+/// One account in a grouped list. The trailing side is the balance, or whatever the caller puts there ("Show").
+struct AccountRowView<Trailing: View>: View {
     let account: Account
-    var onRole: (AccountRole) -> Void = { _ in }
+    @ViewBuilder var trailing: Trailing
+
+    init(account: Account, @ViewBuilder trailing: () -> Trailing) { self.account = account; self.trailing = trailing() }
+
     var body: some View {
         HStack(spacing: Theme.Spacing.s12) {
-            IconCircle(symbol: account.role == .credit ? "creditcard" : "building.columns")
+            IconCircle(symbol: account.symbol)
             VStack(alignment: .leading, spacing: 2) {
                 Text(account.name).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1)
-                Text("••\(account.mask ?? "") · \(account.role.title)").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
+                Text(account.subtitle).font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
             }
             Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 2) {
-                Text((account.role == .credit && account.current > 0 ? -account.current : account.balance).money2).font(Theme.Font.moneyMD).foregroundStyle(Theme.Text.primary)
-                Menu {
-                    ForEach(AccountRole.allCases, id: \.self) { r in Button(r.title) { onRole(r) } }
-                } label: {
-                    Text("CHANGE ROLE").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Accent.default)
-                }
-            }
+            trailing
         }
         .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
+        .contentShape(Rectangle())
     }
 }
 
+extension AccountRowView where Trailing == AnyView {
+    /// Balance on the right, chevron after it — the row is a link to the account's page.
+    init(account: Account) {
+        self.init(account: account) {
+            AnyView(HStack(spacing: Theme.Spacing.s8) {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(account.displayBalance.money2).font(Theme.Font.moneyMD).foregroundStyle(Theme.Text.primary)
+                    if let at = account.balanceAt { Text(at.freshness).font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary) }
+                }
+                Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.Text.tertiary)
+            })
+        }
+    }
+}
+
+extension Account {
+    var symbol: String { role == .credit ? "creditcard" : role == .savings ? "banknote" : "building.columns" }
+    /// "••0930 · Credit card"
+    var subtitle: String { [mask.map { "••\($0)" }, role.title].compactMap { $0 }.joined(separator: " · ") }
+    /// What the user sees: a card's balance owed reads negative, like a statement.
+    var displayBalance: Decimal { role == .credit && current > 0 ? -current : balance }
+}
+
 extension AccountRole {
-    var title: String { switch self { case .spending: "Spending"; case .savings: "Savings"; case .credit: "Credit"; case .other: "Other" } }
+    var title: String { switch self { case .spending: "Spending"; case .savings: "Savings"; case .credit: "Credit card"; case .other: "Other" } }
+    var symbol: String { switch self { case .spending: "building.columns"; case .savings: "banknote"; case .credit: "creditcard"; case .other: "ellipsis" } }
     var order: Int { switch self { case .spending: 0; case .savings: 1; case .credit: 2; case .other: 3 } }
+    var note: String {
+        switch self {
+        case .spending: "Spending: its balance counts toward Ahead; what leaves it counts as spend."
+        case .savings: "Savings: money moved in counts as kept, never as spend."
+        case .credit: "Credit card: what you swipe counts as spend; paying it off doesn’t."
+        case .other: "Other: shown, but left out of the math."
+        }
+    }
 }
 
 struct NavRowLabel: View {

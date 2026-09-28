@@ -9,7 +9,7 @@ struct Next14View: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 0) {
-                    if !model.hasLinkedBank || model.cashflow.isEmpty {
+                    if !model.looksLinked || model.cashflow.isEmpty {
                         EmptyStateView(symbol: "calendar", title: "The next two weeks show up here", body: "Link a bank and Poise will lay out what's due against what you have.")
                     } else {
                         if let crunch = model.insights.first(where: { $0.kind == .crunch }) {

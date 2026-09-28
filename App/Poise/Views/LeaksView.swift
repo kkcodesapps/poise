@@ -17,7 +17,7 @@ struct LeaksView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 0) {
-                    if !model.hasLinkedBank {
+                    if !model.looksLinked {
                         EmptyStateView(symbol: "drop", title: "Leaks show up here", body: "Link a bank and Poise will find subscriptions, price changes, renewals and fees.")
                     } else {
                         HStack(spacing: 8) {
@@ -29,7 +29,7 @@ struct LeaksView: View {
                         if !leakInsights.isEmpty {
                             SectionHeader(title: "Worth a look")
                             Card { ForEach(Array(leakInsights.enumerated()), id: \.element.id) { i, ins in
-                                InsightRowView(insight: ins, showChevron: false)
+                                Button { model.open(ins) } label: { InsightRowView(insight: ins) }.buttonStyle(.plain)
                                     .swipeActions { Button("Got it") { model.acknowledge(ins) }.tint(Theme.Accent.default) }
                                 if i < leakInsights.count - 1 { RowDivider() }
                             } }.padding(.horizontal, Theme.Spacing.s16)
@@ -59,7 +59,7 @@ struct LeaksView: View {
                                 InsightRowView(insight: Insight(id: "fees-none", kind: .positive, tone: .good, title: "No fees this year", body: "No bank, ATM, foreign-transaction or interest charges so far.", rank: 0), showChevron: false)
                             } else {
                                 ForEach(Array(model.fees.items.prefix(5).enumerated()), id: \.element.id) { i, t in
-                                    TransactionRowView(transaction: t, account: model.accounts.first { $0.id == t.accountID })
+                                    Button { model.selectedTransaction = t } label: { TransactionRowView(transaction: t, account: model.accounts.first { $0.id == t.accountID }) }.buttonStyle(.plain)
                                     if i < min(5, model.fees.items.count) - 1 { RowDivider() }
                                 }
                             }
@@ -87,7 +87,7 @@ struct LeaksView: View {
     private func list(_ streams: [RecurringStream]) -> some View {
         Card {
             ForEach(Array(streams.enumerated()), id: \.element.id) { i, s in
-                StreamRowView(stream: s)
+                Button { model.selectedStream = s } label: { StreamRowView(stream: s) }.buttonStyle(.plain)
                 if i < streams.count - 1 { RowDivider() }
             }
         }
