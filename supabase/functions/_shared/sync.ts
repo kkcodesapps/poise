@@ -107,7 +107,7 @@ export async function syncItem(db: SupabaseClient, item: ItemRow): Promise<{ add
 
 
 /** A charge from a merchant the user asked to be told about: mark the watch triggered (the push rides on this later). */
-async function triggerMerchantWatches(db: SupabaseClient, userID: string, rows: { id: string; merchant: string; posted_date: string; kind: string }[]) {
+export async function triggerMerchantWatches(db: SupabaseClient, userID: string, rows: { id: string; merchant: string; posted_date: string; kind: string }[]) {
   const { data: watches } = await db.from("watches").select("id, matcher, created_at").eq("user_id", userID).eq("kind", "merchant").eq("status", "watching");
   if (!watches?.length) return;
   for (const w of watches) {

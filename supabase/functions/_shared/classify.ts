@@ -17,9 +17,11 @@ export function roleFor(a: PlaidAccount): Role {
 
 /** Nine buckets from Plaid's personal finance category. Merchant rules override this at sync time. */
 export function classify(t: PlaidTransaction): { kind: Kind; category: Category | null } {
-  const primary = t.personal_finance_category?.primary ?? "";
-  const detailed = t.personal_finance_category?.detailed ?? "";
-  const inflow = t.amount < 0;
+  return classifyCategory(t.personal_finance_category?.primary ?? "", t.personal_finance_category?.detailed ?? "", t.amount < 0);
+}
+
+/** The one mapping every source funnels through, so the same merchant lands in the same bucket whichever card it was on. */
+export function classifyCategory(primary: string, detailed: string, inflow: boolean): { kind: Kind; category: Category | null } {
   const spend = (category: Category): { kind: Kind; category: Category | null } =>
     inflow ? { kind: "refund", category } : { kind: "spend", category };   // money back at a spend category is a refund
 

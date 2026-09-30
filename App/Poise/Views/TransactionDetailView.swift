@@ -38,6 +38,7 @@ struct TransactionDetailView: View {
             ScrollView {
                 VStack(spacing: 0) {
                     hero
+                    if let why = model.insightContext, why.id.hasSuffix(transaction.id) { whyCard(why) }
                     if transaction.kind == .spend || transaction.kind == .untracked {
                         SectionHeader(title: "Watch")
                         watchSection
@@ -102,6 +103,45 @@ struct TransactionDetailView: View {
         }
     }
 
+    /// Only when the sheet was opened from an insight: what Poise noticed, and a way to settle it.
+    private func whyCard(_ why: Insight) -> some View {
+        let partner = why.kind == .duplicate ? model.duplicatePartner(of: transaction) : nil
+        let fees = model.fees
+        return VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.Status.heads).padding(.top, 2)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(why.kind == .duplicate ? "Charged twice?" : "A fee").font(Theme.Font.subheadStrong).foregroundStyle(Theme.Text.primary)
+                    Text(why.kind == .duplicate
+                         ? "The same \(transaction.magnitude.money2) hit\(partner.map { " on \($0.displayDate.formatted(.dateTime.month(.abbreviated).day()))" } ?? "") and again here. Two identical charges within 48 hours are usually one purchase posting twice — the second often drops off on its own."
+                         : "\(transaction.magnitude.money2) charged by the bank itself. That makes \(fees.total.money) in fees this year across \(fees.items.count) charge\(fees.items.count == 1 ? "" : "s") — Leaks keeps the running total, and banks often waive the first one you ask about.")
+                        .font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
+                }
+            }
+            if let partner {
+                Button { model.insightContext = nil; model.selectedTransaction = partner } label: {
+                    TransactionRowView(transaction: partner, account: model.accounts.first { $0.id == partner.accountID })
+                        .background(Theme.Bg.elevated, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+            HStack(spacing: Theme.Spacing.s8) {
+                Button(why.kind == .duplicate ? "Both are real" : "Got it") { model.acknowledge(why); model.insightContext = nil }.buttonStyle(.secondaryCompact)
+                if why.kind == .duplicate {
+                    Button("Watch for a refund") {
+                        refundOn = true; expected = transaction.magnitude
+                        Task { await model.addWatch(Watch(kind: .refund, transactionID: transaction.id, merchant: transaction.merchant, expectedAmount: transaction.magnitude)) }
+                        model.acknowledge(why); model.insightContext = nil
+                    }
+                    .font(Theme.Font.subheadStrong).foregroundStyle(Theme.Accent.default).buttonStyle(.plain).padding(.horizontal, 12)
+                }
+            }
+        }
+        .padding(Theme.Spacing.s16)
+        .background(Theme.Status.headsBg, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+        .padding(.horizontal, Theme.Spacing.s16)
+    }
+
     private var hero: some View {
         VStack(spacing: 6) {
             IconCircle(symbol: isSpendLike ? model.categories.symbol(categoryID) : kind == .income ? "arrow.down.left" : kind == .ccPayment ? "creditcard" : "arrow.left.arrow.right",
@@ -111,7 +151,7 @@ struct TransactionDetailView: View {
             Text(transaction.pending ? "Pending · authorized \(transaction.displayDate.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))"
                  : transaction.displayDate.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
                 .font(Theme.Font.subhead).foregroundStyle(Theme.Text.secondary)
-            if let account { Text("\(account.name) ••\(account.mask ?? "")\(transaction.pending ? " · usually posts in 1–2 days" : "")").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary) }
+            if let account { Text("\(account.mask.map { "\(account.name) ••\($0)" } ?? account.name)\(transaction.pending ? " · usually posts in 1–2 days" : "")").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary) }
             if transaction.isFee { Text("FEE").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Status.heads).padding(.top, 4) }
         }
         .frame(maxWidth: .infinity)
@@ -170,7 +210,7 @@ struct TransactionDetailView: View {
     private var chips: some View {
         FlowLayout(spacing: 8) {
             ForEach(model.categories.all) { c in
-                chip(label: c.name, symbol: c.symbol, on: categoryID == c.id) {
+                Chip(label: c.name, symbol: c.symbol, on: categoryID == c.id) {
                     categoryID = c.id
                     if kind != .spend && kind != .refund { kind = .spend }
                 }
@@ -183,20 +223,6 @@ struct TransactionDetailView: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, Theme.Spacing.s16).padding(.top, 4)
-    }
-
-    private func chip(label: String, symbol: String, on: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: symbol).font(.system(size: 12, weight: .medium))
-                Text(label).font(Theme.Font.footnote.weight(.semibold))
-            }
-            .foregroundStyle(on ? Theme.Accent.default : Theme.Text.secondary)
-            .padding(.horizontal, 12).frame(height: 32)
-            .background(on ? Theme.Accent.subtle : Theme.Bg.subtle, in: Capsule())
-            .overlay(Capsule().strokeBorder(on ? Theme.Accent.default : .clear))
-        }
-        .buttonStyle(.plain)
     }
 
     private func kindRow(_ k: TransactionKind, symbol: String, label: String) -> some View {

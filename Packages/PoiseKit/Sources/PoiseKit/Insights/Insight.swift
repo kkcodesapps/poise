@@ -51,7 +51,9 @@ public enum InsightEngine {
         }
         let fees = Anomalies.feesYearToDate(input.transactions, now: input.now, calendar: cal)
         if let latest = fees.items.first, (cal.dateComponents([.day], from: latest.displayDate, to: input.now).day ?? 99) <= 7 {
-            out.append(Insight(id: "fee-\(latest.id)", kind: .fee, tone: .heads, title: "\(latest.magnitude.moneyString(cents: true)) fee at \(latest.merchant)",
+            // "$12.00 fee at Chase" — unless the row already reads as a fee ("Interest charge"), then "$3.10 interest charge".
+            let describesItself = latest.merchantKey.contains("fee") || latest.merchantKey.contains("interest") || latest.merchantKey.contains("charge")
+            out.append(Insight(id: "fee-\(latest.id)", kind: .fee, tone: .heads, title: describesItself ? "\(latest.magnitude.moneyString(cents: true)) \(latest.merchant.lowercased())" : "\(latest.magnitude.moneyString(cents: true)) fee at \(latest.merchant)",
                                body: "\(money(fees.total)) in fees this year so far.", rank: 4))
         }
         if let mover = input.pace.topMover, input.pace.overLastMonth > 0, mover.delta > 0 {

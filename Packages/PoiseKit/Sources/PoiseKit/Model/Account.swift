@@ -21,8 +21,17 @@ public struct Account: Identifiable, Hashable, Codable, Sendable {
     public var available: Decimal?
     public var current: Decimal
     public var currency: String
+    /// Where it lives ("Chase", "Apple") and the connection it came through.
+    public var institution: String?
+    public var itemID: String?
+    /// Taken out of the math by the user. The engine never sees hidden accounts; the app keeps them aside.
+    public var hidden: Bool
+    public var hiddenAt: Date?
+    /// When the provider last reported the balance.
+    public var balanceAt: Date?
 
-    public init(id: String, name: String, mask: String? = nil, role: AccountRole, available: Decimal? = nil, current: Decimal, currency: String = "USD") {
+    public init(id: String, name: String, mask: String? = nil, role: AccountRole, available: Decimal? = nil, current: Decimal, currency: String = "USD",
+                institution: String? = nil, itemID: String? = nil, hidden: Bool = false, hiddenAt: Date? = nil, balanceAt: Date? = nil) {
         self.id = id
         self.name = name
         self.mask = mask
@@ -30,6 +39,11 @@ public struct Account: Identifiable, Hashable, Codable, Sendable {
         self.available = available
         self.current = current
         self.currency = currency
+        self.institution = institution
+        self.itemID = itemID
+        self.hidden = hidden
+        self.hiddenAt = hiddenAt
+        self.balanceAt = balanceAt
     }
 
     /// What the math uses: available if the provider reports it, else current.
