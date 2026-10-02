@@ -29,6 +29,11 @@ enum Auth {
             struct Body: Encodable { let previous_token: String }
             try await client.functions.invoke("migrate-user", options: FunctionInvokeOptions(body: Body(previous_token: old)))
         }
+        // The one-time code lets the server keep a revocable token, so "Delete everything" can end the Apple sign-in too.
+        if let codeData = credential.authorizationCode, let code = String(data: codeData, encoding: .utf8) {
+            struct Code: Encodable { let code: String }
+            _ = try? await client.functions.invoke("apple-token", options: FunctionInvokeOptions(body: Code(code: code)))
+        }
         if let name = credential.fullName, let given = name.givenName {
             _ = try? await client.auth.update(user: UserAttributes(data: ["full_name": .string([given, name.familyName].compactMap { $0 }.joined(separator: " "))]))
         }

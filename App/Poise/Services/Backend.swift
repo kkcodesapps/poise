@@ -6,7 +6,17 @@ enum Backend {
     static let url = URL(string: "https://ckncxuxpianojeskebnt.supabase.co")!
     static let publishableKey = "sb_publishable_HQufvSN3H4OjAz3LW0EUYg_fhiBrxPu"
 
-    static let client = SupabaseClient(supabaseURL: url, supabaseKey: publishableKey)
+    /// The app's own keychain group. The Finance extension lists it too, so a background sync runs on the same session.
+    static let keychainGroup = "D6937U28B4.com.koliokolev.poise"
+
+    static let client: SupabaseClient = {
+        #if targetEnvironment(simulator)
+        SupabaseClient(supabaseURL: url, supabaseKey: publishableKey)
+        #else
+        SupabaseClient(supabaseURL: url, supabaseKey: publishableKey,
+                       options: .init(auth: .init(storage: KeychainLocalStorage(service: "supabase.gotrue.swift", accessGroup: keychainGroup))))
+        #endif
+    }()
 
     /// Signs in if there is no session yet. Anonymous for now; Sign in with Apple comes later and links to the same user.
     static func ensureSession() async throws {
