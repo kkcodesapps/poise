@@ -6,7 +6,7 @@ import PoiseKit
 struct Repository {
     let client: SupabaseClient
 
-    struct Snapshot: Sendable {
+    struct Snapshot: Sendable, Codable {
         /// Accounts that count. Hidden ones are kept apart so the engine never sees them.
         var accounts: [Account]
         var hiddenAccounts: [Account]
@@ -20,9 +20,10 @@ struct Repository {
         var watches: [Watch]
     }
 
-    struct Item: Sendable, Identifiable, Hashable { let id: String; let institution: String; let status: String }
+    struct Item: Sendable, Identifiable, Hashable, Codable { let id: String; let institution: String; let status: String }
 
-    func load(days: Int = 90) async throws -> Snapshot {
+    /// Thirteen months: enough for Where's year view and for annual subscriptions to be seen twice.
+    func load(days: Int = 400) async throws -> Snapshot {
         let since = Calendar.current.date(byAdding: .day, value: -days, to: .now) ?? .now
         // Accounts first: hidden ones decide which transactions are worth fetching at all.
         async let accountRows: [AccountRow] = client.from("accounts").select().execute().value
@@ -32,22 +33,38 @@ struct Repository {
         let all = a.map { $0.model(institution: institution[$0.item_id.uuidString] ?? nil) }
         let hidden = all.filter(\.hidden)
 
-        var txnQuery = client.from("transactions").select()
-            .is("deleted_at", value: nil)
-            .gte("display_date", value: Self.day.string(from: since))
-        if !hidden.isEmpty { txnQuery = txnQuery.not("account_id", operator: .in, value: "(\(hidden.map(\.id).joined(separator: ",")))") }
-        async let txnRows: [TransactionRow] = txnQuery.order("display_date", ascending: false).limit(2000).execute().value
+        let hiddenIDs = hidden.map(\.id)
+        async let txnRows: [TransactionRow] = pagedTransactions(since: since, excluding: hiddenIDs)
         async let streamRows: [StreamRow] = client.from("streams").select().eq("status", value: "active").execute().value
         async let catRows: [CategoryRow] = client.from("categories").select().order("sort").execute().value
         async let watchRows: [WatchRow] = client.from("watches").select().order("created_at", ascending: false).execute().value
+        async let nameRows: [NameRule] = client.from("merchant_rules").select("matcher, display_name").not("display_name", operator: .is, value: "null").execute().value
 
-        let (t, s, cats, ws) = try await (txnRows, streamRows, catRows, watchRows)
+        let (t, s, cats, ws, names) = try await (txnRows, streamRows, catRows, watchRows, nameRows)
+        let nameFor = Dictionary(names.compactMap { r in r.display_name.map { (r.matcher, $0) } }, uniquingKeysWith: { a, _ in a })
         let lastSync = items.compactMap { $0.last_synced_at.flatMap(Self.date(from:)) }.max()
-        return Snapshot(accounts: all.filter { !$0.hidden }, hiddenAccounts: hidden, transactions: t.map(\.model), streams: s.map(\.model), lastSync: lastSync,
+        let transactions = t.map { row -> Transaction in var m = row.model; if m.displayName == nil { m.displayName = nameFor[m.merchantKey] }; return m }
+        return Snapshot(accounts: all.filter { !$0.hidden }, hiddenAccounts: hidden, transactions: transactions, streams: s.map(\.model), lastSync: lastSync,
                         institutions: Array(Set(items.compactMap(\.institution_name))).sorted(),
                         relinkNeeded: items.filter { $0.status == "relink" }.map { Item(id: $0.id.uuidString, institution: $0.institution_name ?? "A bank", status: $0.status) },
                         walletLinked: items.contains { $0.provider == "financekit" },
                         customCategories: cats.map(\.model), watches: ws.map(\.model))
+    }
+
+    /// PostgREST caps a response at 1,000 rows; a year of two banks is more than that. Page until a short page.
+    private func pagedTransactions(since: Date, excluding hiddenIDs: [String]) async throws -> [TransactionRow] {
+        var all: [TransactionRow] = []
+        let page = 1000
+        var from = 0
+        while true {
+            var q = client.from("transactions").select().is("deleted_at", value: nil).gte("display_date", value: Self.day.string(from: since))
+            if !hiddenIDs.isEmpty { q = q.not("account_id", operator: .in, value: "(\(hiddenIDs.joined(separator: ",")))") }
+            let rows: [TransactionRow] = try await q.order("display_date", ascending: false).order("id").range(from: from, to: from + page - 1).execute().value
+            all += rows
+            if rows.count < page || all.count >= 8000 { break }
+            from += page
+        }
+        return all
     }
 
     // MARK: rows → models
@@ -55,22 +72,28 @@ struct Repository {
     private struct AccountRow: Decodable {
         let id: UUID, item_id: UUID, name: String, mask: String?, role: String, available: Double?, current: Double, currency: String
         let hidden: Bool, hidden_at: String?, balance_at: String?
+        let statement_due: String?, statement_amount: Double?, minimum_due: Double?
         func model(institution: String?) -> Account {
             Account(id: id.uuidString, name: name, mask: mask, role: AccountRole(rawValue: role) ?? .other,
                     available: available.map(Repository.decimal), current: Repository.decimal(current), currency: currency,
                     institution: institution, itemID: item_id.uuidString, hidden: hidden,
-                    hiddenAt: hidden_at.flatMap(Repository.date(from:)), balanceAt: balance_at.flatMap(Repository.date(from:)))
+                    hiddenAt: hidden_at.flatMap(Repository.date(from:)), balanceAt: balance_at.flatMap(Repository.date(from:)),
+                    statementDue: statement_due.flatMap(Repository.day.date(from:)), statementAmount: statement_amount.map(Repository.decimal), minimumDue: minimum_due.map(Repository.decimal))
         }
     }
+
+    private struct NameRule: Decodable { let matcher: String; let display_name: String? }
 
     private struct TransactionRow: Decodable {
         let id: UUID, account_id: UUID, amount: Double, merchant: String, authorized_date: String?, posted_date: String
         let pending: Bool, kind: String, category: String?, pair_id: UUID?, provider_category: String?
+        let display_name: String?, note: String?, excluded: Bool, created_at: String?, logo_url: String?
         var model: Transaction {
             Transaction(id: id.uuidString, accountID: account_id.uuidString, amount: Repository.decimal(amount), merchant: merchant,
                         authorizedDate: authorized_date.flatMap(Repository.day.date(from:)), date: Repository.day.date(from: posted_date) ?? .now,
                         pending: pending, kind: TransactionKind(rawValue: kind) ?? .spend, categoryID: category,
-                        pairID: pair_id?.uuidString, isFee: provider_category?.hasPrefix("BANK_FEES") ?? false)
+                        pairID: pair_id?.uuidString, isFee: provider_category?.hasPrefix("BANK_FEES") ?? false,
+                        displayName: display_name, note: note, excluded: excluded, createdAt: created_at.flatMap(Repository.date(from:)), logoURL: logo_url)
         }
     }
 
@@ -163,6 +186,38 @@ struct Repository {
         }
     }
 
+    // MARK: push
+
+    func register(deviceToken: String, env: String) async throws {
+        struct Device: Encodable { let user_id: String; let apns_token: String; let env: String; let updated_at: String }
+        let session = try await client.auth.session
+        try await client.from("devices").upsert(Device(user_id: session.user.id.uuidString, apns_token: deviceToken, env: env, updated_at: Date.now.formatted(.iso8601)), onConflict: "user_id,apns_token").execute()
+    }
+
+    // MARK: what was this
+
+    /// A name for every charge from this merchant. Stored on the rule; applied when rows are read, so the descriptor is kept.
+    func setDisplayName(merchant: String, name: String?) async throws {
+        struct Rule: Encodable { let user_id: String; let matcher: String; let display_name: String? }
+        let session = try await client.auth.session
+        try await client.from("merchant_rules").upsert(Rule(user_id: session.user.id.uuidString, matcher: Transaction.merchantKey(merchant), display_name: name), onConflict: "user_id,matcher").execute()
+    }
+
+    func update(transactionID: String, displayName: String?) async throws {
+        struct Patch: Encodable { let display_name: String? }
+        try await client.from("transactions").update(Patch(display_name: displayName)).eq("id", value: transactionID).execute()
+    }
+
+    func update(transactionID: String, note: String?) async throws {
+        struct Patch: Encodable { let note: String? }
+        try await client.from("transactions").update(Patch(note: note)).eq("id", value: transactionID).execute()
+    }
+
+    func update(transactionID: String, excluded: Bool) async throws {
+        struct Patch: Encodable { let excluded: Bool }
+        try await client.from("transactions").update(Patch(excluded: excluded)).eq("id", value: transactionID).execute()
+    }
+
     func update(accountID: String, role: AccountRole) async throws {
         struct Patch: Encodable { let role: String }
         try await client.from("accounts").update(Patch(role: role.rawValue)).eq("id", value: accountID).execute()
@@ -194,6 +249,7 @@ struct Repository {
         var faceID = false
         var categoryLens: [String: String] = [:]     // built-in id → lens override
         var dismissedStreams: [String] = []          // "Not a subscription" — stream ids the detector should keep quiet about
+        var dupMuted: [String] = []                  // merchant keys never to ask "charged twice?" about
     }
 
     private struct SettingsRow: Codable {
@@ -206,6 +262,7 @@ struct Repository {
         var faceid: Bool
         var category_lens: [String: String]?
         var dismissed_streams: [String]?
+        var dup_muted: [String]?
     }
 
     func loadSettings() async throws -> Settings {
@@ -214,14 +271,14 @@ struct Repository {
         return Settings(paydayOverride: r.payday_override.flatMap(Self.day.date(from:)), paysCardsInFull: r.pays_cc_in_full, keptTarget: r.kept_target,
                         committedSavings: Self.decimal(r.committed_savings), notifySpend: r.notif_prefs["spend"] ?? true,
                         notifyHeadsUp: r.notif_prefs["heads_up"] ?? true, notifyWeekly: r.notif_prefs["weekly_review"] ?? true, faceID: r.faceid, categoryLens: r.category_lens ?? [:],
-                        dismissedStreams: r.dismissed_streams ?? [])
+                        dismissedStreams: r.dismissed_streams ?? [], dupMuted: r.dup_muted ?? [])
     }
 
     func save(_ s: Settings) async throws {
         let session = try await client.auth.session
         let row = SettingsRow(user_id: session.user.id.uuidString, payday_override: s.paydayOverride.map(Self.day.string(from:)), pays_cc_in_full: s.paysCardsInFull,
                               kept_target: s.keptTarget, committed_savings: Double(truncating: s.committedSavings as NSDecimalNumber),
-                              notif_prefs: ["spend": s.notifySpend, "heads_up": s.notifyHeadsUp, "weekly_review": s.notifyWeekly], faceid: s.faceID, category_lens: s.categoryLens, dismissed_streams: s.dismissedStreams)
+                              notif_prefs: ["spend": s.notifySpend, "heads_up": s.notifyHeadsUp, "weekly_review": s.notifyWeekly], faceid: s.faceID, category_lens: s.categoryLens, dismissed_streams: s.dismissedStreams, dup_muted: s.dupMuted)
         try await client.from("settings").upsert(row, onConflict: "user_id").execute()
     }
 

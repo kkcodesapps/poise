@@ -15,6 +15,24 @@ struct AccountView: View {
             if let account {
                 VStack(spacing: 0) {
                     hero(account)
+                    if let due = account.statementDue, account.role == .credit {
+                        SectionHeader(title: "Statement")
+                        Card {
+                            HStack { Text("Due").font(Theme.Font.body).foregroundStyle(Theme.Text.primary); Spacer()
+                                Text("\(due.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))\(account.statementAmount.map { " · \($0.money2)" } ?? "")").font(Theme.Font.body).foregroundStyle(Theme.Text.secondary) }
+                                .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44)
+                            if let min = account.minimumDue {
+                                RowDivider()
+                                HStack { Text("Minimum").font(Theme.Font.body).foregroundStyle(Theme.Text.primary); Spacer(); Text(min.money2).font(Theme.Font.body).foregroundStyle(Theme.Text.secondary) }
+                                    .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44)
+                            }
+                        }
+                        .padding(.horizontal, Theme.Spacing.s16)
+                        Text((account.statementIsEstimate ? "Rebuilt from last month’s charges and refunds, less what’s been paid since — Wallet doesn’t share the statement balance itself. " : "")
+                             + (model.settings.paysCardsInFull ? "Next 14 counts the full balance because “I pay credit cards in full” is on." : "Next 14 counts the minimum because “I pay credit cards in full” is off."))
+                            .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s8)
+                    }
                     SectionHeader(title: "Counts as")
                     Card(padding: Theme.Spacing.s12) {
                         VStack(alignment: .leading, spacing: 10) {
@@ -39,6 +57,12 @@ struct AccountView: View {
                         .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s8)
 
+                    if let institution = account.institution, let itemID = account.itemID, institution != "Apple" {
+                        Button("Load two years of history") { Task { await model.relink(Repository.Item(id: itemID, institution: institution, status: "ok")) } }
+                            .buttonStyle(.ghost).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s16)
+                        Text("Re-opens the bank's login once; Plaid then fills in up to 24 months so Leaks can see yearly renewals and Where's year view is complete.")
+                            .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).multilineTextAlignment(.center).padding(.horizontal, Theme.Spacing.s24)
+                    }
                     if let institution = account.institution, account.itemID != nil {
                         Button("Disconnect \(institution)…") { confirmDisconnect = true }
                             .buttonStyle(.ghost(Theme.Status.heads)).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s24)

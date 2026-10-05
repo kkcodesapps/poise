@@ -50,6 +50,28 @@ struct IconCircle: View {
     }
 }
 
+/// The merchant's logo when the provider has one, the glyph when it doesn't. Same circle either way.
+struct MerchantCircle: View {
+    let logoURL: String?
+    let symbol: String
+    var size: CGFloat = 40
+    var fill: Color = Theme.Bg.subtle
+    var color: Color = Theme.Text.primary
+    var dashed = false
+    var body: some View {
+        if let logoURL, let url = URL(string: logoURL) {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image { image.resizable().scaledToFill() } else { IconCircle(symbol: symbol, size: size, fill: fill, color: color, dashed: dashed) }
+            }
+            .frame(width: size, height: size).background(Theme.Bg.subtle).clipShape(Circle())
+            .overlay(Circle().strokeBorder(Theme.Border.subtle))
+            .opacity(dashed ? 0.7 : 1)
+        } else {
+            IconCircle(symbol: symbol, size: size, fill: fill, color: color, dashed: dashed)
+        }
+    }
+}
+
 struct StatusPill: View {
     let status: VerdictStatus
     var body: some View {
@@ -84,6 +106,7 @@ extension Insight.Kind {
         case .watchTriggered: "eye"
         case .refundOverdue: "arrow.uturn.backward"
         case .refundArrived: "checkmark"
+        case .statement: "creditcard"
         }
     }
 }
@@ -224,6 +247,15 @@ extension Double {
 
 
 extension Date {
+    /// "Tue" for this week, "Sep 9" before that — the moment the app was last in front.
+    var sinceLabel: String {
+        let cal = Calendar.current
+        if cal.isDateInToday(self) { return "earlier today" }
+        if cal.isDateInYesterday(self) { return "yesterday" }
+        if let days = cal.dateComponents([.day], from: cal.startOfDay(for: self), to: cal.startOfDay(for: .now)).day, days < 7 { return formatted(.dateTime.weekday(.abbreviated)) }
+        return formatted(.dateTime.month(.abbreviated).day())
+    }
+
     /// "as of just now" / "as of 2 min ago" / "as of 3 h ago"
     var freshness: String {
         let s = Int(Date.now.timeIntervalSince(self))
@@ -236,8 +268,8 @@ extension Date {
 
 
 extension PoiseKit.Transaction {
-    /// Raw bank descriptors shout ("ACH ELECTRONIC CREDIT *//"); show them like a name.
-    var displayMerchant: String { merchant.prettyMerchant }
+    /// The user's name when they gave one; otherwise the bank's descriptor, un-shouted ("ACH ELECTRONIC CREDIT *//").
+    var displayMerchant: String { displayName ?? merchant.prettyMerchant }
 }
 
 extension RecurringStream {

@@ -32,6 +32,16 @@ actor WalletSource {
 
     func isAuthorized() async -> Bool { (try? await store.authorizationStatus()) == .authorized }
 
+    /// Asks the system to wake the Poise Finance extension when Wallet changes (at most hourly), so Apple Card charges
+    /// reach the server — and become pushes — with the app closed. iOS 26 and up; nothing happens elsewhere.
+    nonisolated static func setBackgroundDelivery(_ on: Bool) {
+        #if !targetEnvironment(simulator)
+        guard #available(iOS 26, *) else { return }
+        if on { FinanceStore.shared.enableBackgroundDelivery(for: [.accounts, .accountBalances, .transactions], frequency: .hourly) }
+        else { FinanceStore.shared.disableAllBackgroundDelivery() }
+        #endif
+    }
+
     /// Shows the system access sheet; on a yes, reads everything Wallet shares and sends it up.
     func connect() async throws -> Bool {
         guard try await store.requestAuthorization() == .authorized else { return false }
@@ -92,12 +102,15 @@ extension WalletSource {
 
         struct Account: Encodable, Sendable {
             let id: String, name: String, description: String?, institution: String, currency: String, kind: String, creditLimit: Decimal?
+            let nextPaymentDue: String?, minimumPayment: Decimal?
             init(_ a: FinanceKit.Account) {
                 id = a.id.uuidString; name = a.displayName; description = a.accountDescription; institution = a.institutionName; currency = a.currencyCode
                 switch a {
-                case .asset: kind = "asset"; creditLimit = nil
-                case .liability(let l): kind = "liability"; creditLimit = l.creditInformation.creditLimit?.amount
-                @unknown default: kind = "asset"; creditLimit = nil
+                case .asset: kind = "asset"; creditLimit = nil; nextPaymentDue = nil; minimumPayment = nil
+                case .liability(let l):
+                    kind = "liability"; creditLimit = l.creditInformation.creditLimit?.amount
+                    nextPaymentDue = l.creditInformation.nextPaymentDueDate.map(Payload.day); minimumPayment = l.creditInformation.minimumNextPaymentAmount?.amount
+                @unknown default: kind = "asset"; creditLimit = nil; nextPaymentDue = nil; minimumPayment = nil
                 }
             }
         }

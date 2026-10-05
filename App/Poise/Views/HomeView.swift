@@ -4,11 +4,20 @@ import PoiseKit
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
+    @State private var searchText = ""
+    @State private var filterAccount: String?
+    @State private var filterCategory: String?
+    @State private var filterPending = false
+    @State private var filterExcluded = false
+    private var searching: Bool { !searchText.isEmpty || filterAccount != nil || filterCategory != nil || filterPending || filterExcluded }
 
     var body: some View {
         @Bindable var model = model
         NavigationStack {
             ScrollView {
+                if searching {
+                    searchResults
+                } else {
                 VStack(spacing: Theme.Spacing.s12) {
                     ForEach(model.relinkNeeded) { item in
                         Button { Task { await model.relink(item) } } label: {
@@ -49,6 +58,36 @@ struct HomeView: View {
                         Text("\((model.institutions.isEmpty ? ["Accounts"] : model.institutions).joined(separator: " · ")) · \(last.freshness)")
                             .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).lineLimit(1)
                     }
+                    if let since = model.since {
+                        Button { model.showSince = true } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "sparkles").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.Accent.default)
+                                Text("Since \(since.lastLooked.sinceLabel) · \(since.summary)").font(Theme.Font.footnote).foregroundStyle(Theme.Text.primary).multilineTextAlignment(.leading)
+                                Spacer(minLength: 4)
+                                Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.Text.tertiary)
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 10)
+                            .background(Theme.Accent.subtle, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if model.showPushAsk {
+                        Card(padding: Theme.Spacing.s16) {
+                            VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
+                                HStack(alignment: .top, spacing: Theme.Spacing.s12) {
+                                    IconCircle(symbol: "bell", size: 36, fill: Theme.Accent.subtle, color: Theme.Accent.default)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("Know the moment something lands").font(Theme.Font.headline).foregroundStyle(Theme.Text.primary)
+                                        Text("A charge, a fee, a renewal, a refund — Poise can tell you as it happens, not when you remember to look. Never marketing.").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
+                                    }
+                                }
+                                HStack(spacing: Theme.Spacing.s8) {
+                                    Button("Turn on") { Task { await model.enablePush() } }.buttonStyle(.primary).frame(maxWidth: 120)
+                                    Button("Not now") { model.declinePush() }.font(Theme.Font.subheadStrong).foregroundStyle(Theme.Accent.default).buttonStyle(.plain).padding(.horizontal, 12)
+                                }
+                            }
+                        }
+                    }
                     if model.isReviewDay, !model.reviewCards.isEmpty {
                         Button { model.showReview = true } label: {
                             InsightRowView(insight: Insight(id: "review", kind: .positive, tone: .good, title: "Your week is ready", body: "Five cards, about 60 seconds.", rank: 0))
@@ -65,10 +104,15 @@ struct HomeView: View {
                 .padding(.horizontal, Theme.Spacing.s16)
                 .padding(.top, Theme.Spacing.s4)
                 .padding(.bottom, Theme.Spacing.s24)
+                }
             }
             .background(Theme.Bg.base)
             .refreshable { await model.refresh() }
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Merchant, note or amount")
             .navigationTitle("Home")
+            #if DEBUG
+            .onAppear { let a = ProcessInfo.processInfo.arguments; if let i = a.firstIndex(of: "-search"), i + 1 < a.count { searchText = a[i + 1] } }
+            #endif
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { model.showProfile = true } label: {
@@ -83,6 +127,40 @@ struct HomeView: View {
         }
     }
 
+}
+
+extension HomeView {
+    /// Results replace the feed while a query or a filter is active: chips first, then the matches with their dates.
+    private var searchResults: some View {
+        let rows = model.search(searchText, account: filterAccount, category: filterCategory, pending: filterPending, excluded: filterExcluded)
+        let spent = rows.filter { ($0.kind == .spend || $0.kind == .untracked) && !$0.excluded }.reduce(Decimal(0)) { $0 + $1.magnitude }
+        return VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    Chip(label: "Pending", symbol: "clock", on: filterPending) { filterPending.toggle() }
+                    Chip(label: "Not counted", symbol: "eye.slash", on: filterExcluded) { filterExcluded.toggle() }
+                    ForEach(model.accounts) { a in Chip(label: a.name, symbol: a.symbol, on: filterAccount == a.id) { filterAccount = filterAccount == a.id ? nil : a.id } }
+                    ForEach(model.categories.all) { c in Chip(label: c.name, symbol: c.symbol, on: filterCategory == c.id) { filterCategory = filterCategory == c.id ? nil : c.id } }
+                }
+                .padding(.horizontal, Theme.Spacing.s16)
+            }
+            .padding(.top, Theme.Spacing.s4)
+            Text(rows.isEmpty ? "Nothing matches" : "\(rows.count) row\(rows.count == 1 ? "" : "s")\(spent > 0 ? " · \(spent.money2) spent" : "")")
+                .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).padding(.horizontal, Theme.Spacing.s16)
+            if !rows.isEmpty {
+                Card {
+                    ForEach(Array(rows.prefix(200).enumerated()), id: \.element.id) { i, t in
+                        Button { model.selectedTransaction = t } label: { TransactionRowView(transaction: t, account: model.accounts.first { $0.id == t.accountID }, showsDate: true) }
+                            .buttonStyle(.plain)
+                            .contextMenu { Button("All charges from \(t.displayMerchant)", systemImage: "magnifyingglass") { model.selectedMerchant = .init(key: t.merchantKey) } }
+                        if i < min(200, rows.count) - 1 { RowDivider() }
+                    }
+                }
+                .padding(.horizontal, Theme.Spacing.s16)
+            }
+        }
+        .padding(.bottom, Theme.Spacing.s24)
+    }
 }
 
 /// The hero: a status sentence, how far ahead you are, what you've kept, and the one thing to do.
@@ -175,7 +253,7 @@ struct Feed: View {
                 EmptyStateView(symbol: "bolt", title: "Your feed starts here", body: "Every charge, the day you paid it. Transfers and refunds shown, never counted as spending.")
             }
             ForEach(days, id: \.0) { day, rows in
-                DayHeader(day: day, total: rows.filter { $0.kind == .spend || $0.kind == .untracked }.reduce(0) { $0 + $1.amount })
+                DayHeader(day: day, total: rows.filter { ($0.kind == .spend || $0.kind == .untracked) && !$0.excluded }.reduce(0) { $0 + $1.amount })
                 Card {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { i, t in
                         Button { onSelect(t) } label: { TransactionRowView(transaction: t, account: accounts.first { $0.id == t.accountID }) }
@@ -219,7 +297,7 @@ struct TransactionRowView: View {
 
     var body: some View {
         HStack(spacing: Theme.Spacing.s12) {
-            IconCircle(symbol: symbol, fill: circleFill, color: iconColor, dashed: transaction.pending)
+            MerchantCircle(logoURL: transaction.excluded || transaction.kind == .transfer || transaction.kind == .ccPayment ? nil : transaction.logoURL, symbol: symbol, fill: circleFill, color: iconColor, dashed: transaction.pending)
                 .overlay(alignment: .bottomTrailing) {
                     if watch != nil {
                         ZStack { Circle().fill(Theme.Accent.default); Image(systemName: "bookmark.fill").font(.system(size: 8, weight: .bold)).foregroundStyle(.white) }
@@ -236,6 +314,7 @@ struct TransactionRowView: View {
                 if let w = watch, w.status == .triggered { Text("CHARGED AGAIN").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Status.heads) }
                 else if let w = watch, w.status == .overdue { Text("OVERDUE").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Status.track) }
                 else if watch != nil { Text("WATCHING").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Accent.default) }
+                else if transaction.excluded { Text("NOT COUNTED").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary) }
                 else if transaction.pending { Text("PENDING").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary) }
                 else if transaction.isFee { Text("FEE").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Status.heads) }
                 else if showsDate { Text(transaction.displayDate.formatted(.dateTime.month(.abbreviated).day()).uppercased()).font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary) }
@@ -243,10 +322,13 @@ struct TransactionRowView: View {
         }
         .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
         .contentShape(Rectangle())
+        .opacity(transaction.excluded ? 0.55 : 1)
     }
 
     private var subtitle: String {
         var parts: [String] = []
+        if let note = transaction.note { parts.append(note) }
+        if transaction.excluded { parts.append("Left out"); if let account { parts.append(account.name) }; return parts.joined(separator: " · ") }
         switch transaction.kind {
         case .spend: parts.append(model.categories.name(transaction.categoryID))
         case .income: parts.append("Income")
@@ -287,7 +369,8 @@ struct TransactionRowView: View {
         }
     }
     private var symbol: String {
-        switch transaction.kind {
+        if transaction.excluded { return "eye.slash" }
+        return switch transaction.kind {
         case .income: "arrow.down.left"
         case .transfer: "arrow.left.arrow.right"
         case .ccPayment: "creditcard"
