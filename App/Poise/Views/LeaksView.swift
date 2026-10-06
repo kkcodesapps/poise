@@ -98,6 +98,7 @@ struct LeaksView: View {
         switch s.cadence {
         case .weekly: (s.amount * 52 / 12).roundedToCents
         case .biweekly: (s.amount * 26 / 12).roundedToCents
+        case .semimonthly: s.amount * 2
         case .monthly: s.amount
         case .quarterly: (s.amount / 3).roundedToCents
         case .annual: (s.amount / 12).roundedToCents
