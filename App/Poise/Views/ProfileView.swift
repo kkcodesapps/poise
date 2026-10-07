@@ -58,7 +58,7 @@ struct ProfileView: View {
                     .padding(.horizontal, Theme.Spacing.s16)
                     SectionHeader(title: "Privacy & data")
                     PrivacySection()
-                    Text("Poise 0.1.0").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).padding(.top, Theme.Spacing.s24)
+                    Text("Poise \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") (\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""))").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).padding(.top, Theme.Spacing.s24)
                 }
                 .padding(.bottom, Theme.Spacing.s32)
             }
@@ -195,6 +195,21 @@ struct SettingsSection: View {
             ToggleRow(label: "Notify on heads-ups", isOn: $draft.notifyHeadsUp)
             RowDivider()
             ToggleRow(label: "Weekly review · Sun 6 PM", isOn: $draft.notifyWeekly)
+            if model.pushStatus == .denied {
+                RowDivider()
+                Button { if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) } } label: {
+                    HStack { Text("Notifications are off for Poise in iOS Settings").font(Theme.Font.footnote).foregroundStyle(Theme.Status.heads); Spacer(); Text("Open").font(Theme.Font.subheadStrong).foregroundStyle(Theme.Accent.default) }
+                        .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else if model.pushStatus == .notDetermined, model.askedForPush {
+                RowDivider()
+                Button { Task { await model.enablePush() } } label: {
+                    HStack { Text("Pushes aren’t on yet").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary); Spacer(); Text("Turn on").font(Theme.Font.subheadStrong).foregroundStyle(Theme.Accent.default) }
+                        .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(.horizontal, Theme.Spacing.s16)
         .onAppear { if !loaded { draft = model.settings; loaded = true } }
@@ -237,7 +252,6 @@ struct DatePickerRow: View {
 /// Anonymous until the user says otherwise. Sign in with Apple keeps everything already linked.
 struct AccountSection: View {
     @Environment(AppModel.self) private var model
-    @State private var nonce = Auth.makeNonce()
 
     var body: some View {
         Card {
@@ -245,24 +259,7 @@ struct AccountSection: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
                     Text("You're using Poise without an account. Sign in with Apple to keep your banks linked across devices and reinstalls.")
                         .font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
-                    SignInWithAppleButton(.signIn) { request in
-                        request.requestedScopes = [.fullName]
-                        request.nonce = Auth.sha256(nonce)
-                    } onCompletion: { result in
-                        switch result {
-                        case .success(let auth):
-                            if let credential = auth.credential as? ASAuthorizationAppleIDCredential {
-                                let n = nonce
-                                Task { await model.signInWithApple(credential, nonce: n) }
-                                nonce = Auth.makeNonce()
-                            }
-                        case .failure(let error):
-                            if (error as? ASAuthorizationError)?.code != .canceled { model.errorMessage = error.localizedDescription }
-                        }
-                    }
-                    .signInWithAppleButtonStyle(.black)
-                    .frame(height: 50)
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+                    AppleSignInButton()
                 }
                 .padding(Theme.Spacing.s16)
             } else {

@@ -22,11 +22,18 @@ struct RootView: View {
         // Sheets hang off the root so a row on any tab can open them.
         .sheet(item: $model.selectedTransaction, onDismiss: { model.insightContext = nil }) { t in TransactionDetailView(transaction: t) }
         .sheet(item: $model.selectedStream) { s in StreamDetailView(stream: s) }
+        .sheet(isPresented: $model.showSince, onDismiss: { model.dismissSince() }) { SinceView() }
+        .sheet(item: $model.selectedMerchant) { m in MerchantView(merchantKey: m.key) }
+        #if DEBUG
+        .sheet(isPresented: $model.showWidgetPreview) { WidgetPreviewSheet() }
+        #endif
         .sheet(isPresented: $model.showProfile) { ProfileView() }
         .fullScreenCover(isPresented: $model.showReview) { WeeklyReviewView() }
+        .overlay { if model.onboarding != nil { OnboardingView().transition(.opacity) } }
         .overlay { if model.isLocked { LockScreen() } }
         .overlay { if model.launch != .ready { LaunchView().transition(.opacity) } }
         .animation(.easeInOut(duration: 0.3), value: model.launch)
+        .animation(.easeInOut(duration: 0.3), value: model.onboarding == nil)
         .alert("Something went wrong", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
@@ -46,10 +53,7 @@ struct LockScreen: View {
     var body: some View {
         VStack(spacing: Theme.Spacing.s16) {
             Spacer()
-            ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Theme.Accent.default).frame(width: 72, height: 72)
-                Text("P").font(.system(size: 42, weight: .bold, design: .rounded)).foregroundStyle(.white)
-            }
+            PoiseMark()
             Text("Poise is locked").font(Theme.Font.titleMD).foregroundStyle(Theme.Text.primary)
             Text("Face ID keeps your finances private.").font(Theme.Font.verdictMD).foregroundStyle(Theme.Text.secondary)
             Spacer()

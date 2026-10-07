@@ -197,9 +197,10 @@ struct CategoryRowView: View {
     private var deltaText: some View {
         Group {
             if let d = row.delta {
-                if d > 0 { Text("+\(d.money) vs \(previousLabel)").foregroundStyle(Theme.Status.track) }
-                else if d < 0 { Text("\(d.money) vs \(previousLabel)").foregroundStyle(Theme.Status.good) }
-                else { Text("same \(previousLabel)").foregroundStyle(Theme.Text.tertiary) }
+                // `previousLabel` already reads "vs Aug" / "vs last wk".
+                if d > 0 { Text("+\(d.money) \(previousLabel)").foregroundStyle(Theme.Status.track) }
+                else if d < 0 { Text("\(d.money) \(previousLabel)").foregroundStyle(Theme.Status.good) }
+                else { Text("same \(previousLabel.replacingOccurrences(of: "vs ", with: "as "))").foregroundStyle(Theme.Text.tertiary) }
             } else { Text("new").foregroundStyle(Theme.Text.tertiary) }
         }
         .font(Theme.Font.captionStrong)
@@ -249,7 +250,7 @@ struct CategoryDetailView: View {
 
     private var category: PoiseKit.Category { model.categories.resolve(categoryID) }
     private var window: DateInterval { model.whereWindow }
-    private var charges: [PoiseKit.Transaction] { model.transactions.filter { window.contains($0.displayDate) && ($0.kind == .spend || $0.kind == .untracked) && model.categories.resolve($0.categoryID).id == categoryID }.sorted { $0.displayDate > $1.displayDate } }
+    private var charges: [PoiseKit.Transaction] { model.transactions.filter { window.holds($0.displayDate) && ($0.kind == .spend || $0.kind == .untracked) && model.categories.resolve($0.categoryID).id == categoryID }.sorted { $0.displayDate > $1.displayDate } }
     private var merchants: [CategoryBreakdown.Merchant] { CategoryBreakdown.merchants(in: categoryID, transactions: model.transactions, window: window, categories: model.categories) }
 
     var body: some View {
@@ -266,6 +267,7 @@ struct CategoryDetailView: View {
                 SectionHeader(title: "Merchants")
                 Card {
                     ForEach(Array(merchants.prefix(8).enumerated()), id: \.element.id) { i, m in
+                        Button { model.selectedMerchant = .init(key: PoiseKit.Transaction.merchantKey(m.name)) } label: {
                         HStack(spacing: Theme.Spacing.s12) {
                             ZStack { Circle().fill(Theme.Bg.subtle); Text("\(i + 1)").font(Theme.Font.captionStrong).foregroundStyle(Theme.Text.secondary) }.frame(width: 28, height: 28)
                             VStack(alignment: .leading, spacing: 2) {
@@ -274,8 +276,11 @@ struct CategoryDetailView: View {
                             }
                             Spacer()
                             Text(m.amount.money).font(Theme.Font.moneyMD).foregroundStyle(Theme.Text.primary)
+                            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.Text.tertiary)
                         }
-                        .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
+                        .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                         if i < min(8, merchants.count) - 1 { RowDivider() }
                     }
                 }

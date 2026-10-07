@@ -114,9 +114,9 @@ struct StreamDetailView: View {
 
 extension Cadence {
     var title: String {
-        switch self { case .weekly: "Weekly"; case .biweekly: "Every 2 weeks"; case .monthly: "Monthly"; case .quarterly: "Quarterly"; case .annual: "Yearly" }
+        switch self { case .weekly: "Weekly"; case .biweekly: "Every 2 weeks"; case .semimonthly: "Twice a month"; case .monthly: "Monthly"; case .quarterly: "Quarterly"; case .annual: "Yearly" }
     }
     var perYear: Decimal {
-        switch self { case .weekly: 52; case .biweekly: 26; case .monthly: 12; case .quarterly: 4; case .annual: 1 }
+        switch self { case .weekly: 52; case .biweekly: 26; case .semimonthly: 24; case .monthly: 12; case .quarterly: 4; case .annual: 1 }
     }
 }
