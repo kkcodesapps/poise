@@ -2,7 +2,7 @@ import Foundation
 
 /// The one thing worth saying. Ranked so Home shows the top one and Leaks / Pace / Review get the rest.
 public struct Insight: Hashable, Sendable, Identifiable {
-    public enum Kind: String, Sendable, Codable { case crunch, duplicate, priceUp, fee, paceOverrun, positive, newStream, renewal, watchTriggered, refundOverdue, refundArrived }
+    public enum Kind: String, Sendable, Codable { case crunch, duplicate, priceUp, fee, paceOverrun, positive, newStream, renewal, watchTriggered, refundOverdue, refundArrived, statement }
     public enum Tone: String, Sendable { case heads, neutral, good }
 
     public let id: String
@@ -25,9 +25,11 @@ public enum InsightEngine {
         public var transactions: [Transaction]
         public var now: Date
         public var acknowledged: Set<String>
+        /// Merchant keys the user has said never to flag for double charges.
+        public var dupMuted: Set<String>
         public var calendar: Calendar
-        public init(verdict: Verdict, pace: Pace, streams: [RecurringStream], transactions: [Transaction], now: Date, acknowledged: Set<String> = [], calendar: Calendar = .current) {
-            self.verdict = verdict; self.pace = pace; self.streams = streams; self.transactions = transactions; self.now = now; self.acknowledged = acknowledged; self.calendar = calendar
+        public init(verdict: Verdict, pace: Pace, streams: [RecurringStream], transactions: [Transaction], now: Date, acknowledged: Set<String> = [], dupMuted: Set<String> = [], calendar: Calendar = .current) {
+            self.verdict = verdict; self.pace = pace; self.streams = streams; self.transactions = transactions; self.now = now; self.acknowledged = acknowledged; self.dupMuted = dupMuted; self.calendar = calendar
         }
     }
 
@@ -41,9 +43,9 @@ public enum InsightEngine {
             out.append(Insight(id: "crunch-\(crunch.date.timeIntervalSince1970)", kind: .crunch, tone: .heads,
                                title: "Checking runs short on \(day)", body: "Move \(money(crunch.shortfall)) from savings before then and every bill clears.", rank: 1))
         }
-        for d in Anomalies.duplicates(in: input.transactions) {
+        for d in Anomalies.duplicates(in: input.transactions, muted: input.dupMuted, calendar: cal) {
             out.append(Insight(id: "dup-\(d.second.id)", kind: .duplicate, tone: .heads, title: "Charged twice at \(d.first.merchant)?",
-                               body: "\(d.first.magnitude.moneyString(cents: true)) twice within two days. Worth a look before it posts.", rank: 2))
+                               body: "\(d.first.magnitude.moneyString(cents: true)) twice on the same day, same card. Worth a look before it posts.", rank: 2))
         }
         for s in input.streams where s.priceWentUp {
             out.append(Insight(id: "price-\(s.id)", kind: .priceUp, tone: .heads, title: "\(s.merchant) went up \((s.amount - (s.previousAmount ?? s.amount)).moneyString(cents: true))",
@@ -89,6 +91,7 @@ public extension Cadence {
         switch self {
         case .weekly: "weekly"
         case .biweekly: "every two weeks"
+        case .semimonthly: "twice a month"
         case .monthly: "monthly"
         case .quarterly: "quarterly"
         case .annual: "yearly"

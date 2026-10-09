@@ -38,8 +38,8 @@ public enum PaceEngine {
 
         func isSpend(_ t: Transaction) -> Bool { (t.kind == .spend || t.kind == .untracked) && categories.lens(t.categoryID) != .kept }
         func net(_ rows: [Transaction]) -> Decimal { rows.reduce(0) { $0 + (isSpend($1) ? $1.magnitude : $1.kind == .refund ? -$1.magnitude : 0) } }
-        let thisRows = transactions.filter { month.contains($0.displayDate) && $0.displayDate <= now && (isSpend($0) || $0.kind == .refund) }
-        let lastRows = transactions.filter { lastMonth.contains($0.displayDate) && (isSpend($0) || $0.kind == .refund) }
+        let thisRows = transactions.filter { month.holds($0.displayDate) && $0.displayDate <= now && (isSpend($0) || $0.kind == .refund) }
+        let lastRows = transactions.filter { lastMonth.holds($0.displayDate) && (isSpend($0) || $0.kind == .refund) }
         let sameDayCutoff = calendar.date(byAdding: .day, value: dayOfMonth, to: lastMonthStart)!
         let lastSameDayRows = lastRows.filter { $0.displayDate < sameDayCutoff }
 

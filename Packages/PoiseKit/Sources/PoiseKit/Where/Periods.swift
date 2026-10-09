@@ -39,7 +39,7 @@ public enum Periods {
     /// (September 1–15 compares to August 1–15; a finished month compares to the whole previous month).
     public static func comparable(previousOf window: DateInterval, _ period: Period, now: Date, calendar: Calendar = .current) -> DateInterval {
         let prev = shift(window, period, by: -1, calendar: calendar)
-        guard window.contains(now) else { return prev }
+        guard window.holds(now) else { return prev }
         let elapsed = now.timeIntervalSince(window.start)
         return DateInterval(start: prev.start, end: min(prev.end, prev.start.addingTimeInterval(elapsed)))
     }

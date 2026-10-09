@@ -68,7 +68,11 @@ public struct VerdictInput: Sendable {
     public var calendar: Calendar
     public var categories: CategorySet
 
-    public init(accounts: [Account], transactions: [Transaction], streams: [RecurringStream], now: Date, nextPayday: Date? = nil, expectedIncome: Decimal? = nil, keptTarget: Double = 0.20, committedSavings: Decimal = 0, anomalies: Int = 0, calendar: Calendar = .current, categories: CategorySet = .builtIn) {
+    /// Whether a card's statement leaves checking in full on its due date (else the minimum) — the same switch Next 14 uses.
+    public var paysCardsInFull: Bool
+
+    public init(accounts: [Account], transactions: [Transaction], streams: [RecurringStream], now: Date, nextPayday: Date? = nil, expectedIncome: Decimal? = nil, keptTarget: Double = 0.20, committedSavings: Decimal = 0, anomalies: Int = 0, calendar: Calendar = .current, categories: CategorySet = .builtIn, paysCardsInFull: Bool = true) {
+        self.paysCardsInFull = paysCardsInFull
         self.accounts = accounts
         self.transactions = transactions
         self.streams = streams
@@ -114,7 +118,15 @@ public enum VerdictEngine {
         var balance = input.accounts.filter { $0.role == .spending }.reduce(Decimal(0)) { $0 + $1.balance }
 
         var byDay: [Date: Decimal] = [:]
+        // The same picture as Next 14: card charges settle through the statement, and the statement leaves checking.
+        let cards = Set(input.accounts.filter { $0.role == .credit }.map(\.id))
+        for a in input.accounts where a.role == .credit && !a.hidden {
+            guard let due = a.statementDue, let amount = a.statementPayment(paysInFull: input.paysCardsInFull) else { continue }
+            let day = cal.startOfDay(for: due)
+            if day > today, day <= payday { byDay[day, default: 0] -= amount }
+        }
         for s in input.streams {
+            if let a = s.accountID, cards.contains(a) { continue }
             for d in s.occurrences(after: today, through: payday, calendar: cal) {
                 let day = cal.startOfDay(for: d)
                 if s.kind == .income {
@@ -140,7 +152,7 @@ public enum VerdictEngine {
         guard let month = cal.dateInterval(of: .month, for: input.now) else {
             return Kept(keptSoFar: 0, expectedIncome: 0, onPacePercent: 0)
         }
-        let inMonth = input.transactions.filter { month.contains($0.displayDate) && $0.displayDate <= input.now }
+        let inMonth = input.transactions.filter { month.holds($0.displayDate) && $0.displayDate <= input.now }
 
         var income: Decimal = 0, spend: Decimal = 0, wants: Decimal = 0, refunds: Decimal = 0
         for t in inMonth {

@@ -21,7 +21,7 @@ public enum WeeklyReview {
         let prev = DateInterval(start: prevStart, end: weekStart)
         func isSpend(_ t: Transaction) -> Bool { (t.kind == .spend || t.kind == .untracked) && categories.lens(t.categoryID) != .kept }
         func kept(_ i: DateInterval) -> Decimal {
-            transactions.filter { i.contains($0.displayDate) }.reduce(0) { acc, t in
+            transactions.filter { i.holds($0.displayDate) }.reduce(0) { acc, t in
                 acc + (t.kind == .income ? t.amount : isSpend(t) ? -t.magnitude : t.kind == .refund ? t.magnitude : 0)
             }
         }
@@ -32,7 +32,7 @@ public enum WeeklyReview {
                                 body: diff >= 0 ? "That's \(diff.moneyString(cents: false)) more than last week." : "That's \((-diff).moneyString(cents: false)) less than last week.",
                                 tone: diff >= 0 ? .good : .neutral))
 
-        let weekSpend = transactions.filter { week.contains($0.displayDate) && isSpend($0) }
+        let weekSpend = transactions.filter { week.holds($0.displayDate) && isSpend($0) }
         let byCat = Dictionary(grouping: weekSpend) { categories.resolve($0.categoryID).id }.mapValues { $0.reduce(Decimal(0)) { $0 + $1.magnitude } }
         if let (cat, total) = byCat.max(by: { $0.value < $1.value }) {
             let merchants = Dictionary(grouping: weekSpend.filter { categories.resolve($0.categoryID).id == cat }) { $0.merchant }.mapValues { $0.reduce(Decimal(0)) { $0 + $1.magnitude } }
