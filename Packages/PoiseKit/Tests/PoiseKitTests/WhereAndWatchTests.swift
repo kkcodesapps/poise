@@ -51,6 +51,17 @@ struct WhereAndWatchTests {
         #expect(m.first?.name == "DoorDash" && m.first?.count == 1)
     }
 
+    @Test func midnightRowsLandInOneDayOnly() {
+        // Provider rows are dated at local midnight; a Friday charge must not also count as Thursday's.
+        let week = Periods.window(.week, containing: Fix.day(2026, 9, 18), calendar: Fix.calendar)
+        let two = [Fix.tx("th", "card", "-10", "JuRin Sushi", on: Fix.day(2026, 9, 17)), Fix.tx("fr", "card", "-20", "sweetgreen", on: Fix.day(2026, 9, 18))]
+        let b = CategoryBreakdown.compute(transactions: two, period: .week, window: week, now: Fix.day(2026, 9, 18), categories: CategorySet([]), calendar: Fix.calendar)
+        let thursday = b.slices[3], friday = b.slices[4]
+        #expect(thursday.transactions.map(\.id) == ["th"] && thursday.amount == Fix.money("10"))
+        #expect(friday.transactions.map(\.id) == ["fr"] && friday.amount == Fix.money("20"))
+        #expect(b.total == Fix.money("30"))
+    }
+
     @Test func refundWatchResolvesAndOverdues() {
         let w = Watch(id: "w1", kind: .refund, transactionID: "a", merchant: "DoorDash", expectedAmount: Fix.money("20"), nudgeDays: 5, createdAt: Fix.day(2026, 9, 3))
         let evaluated = WatchEngine.evaluate([w], transactions: rows, now: now, calendar: Fix.calendar)
