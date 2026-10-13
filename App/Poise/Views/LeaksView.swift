@@ -11,7 +11,7 @@ struct LeaksView: View {
     private var renewals: [RecurringStream] {
         model.streams.filter { $0.cadence == .annual && (Calendar.current.dateComponents([.day], from: .now, to: $0.nextExpected).day ?? 99) <= 30 }
     }
-    private var leakInsights: [Insight] { model.insights.filter { [.duplicate, .fee].contains($0.kind) } }
+    private var leakInsights: [Insight] { model.insights.filter { [.duplicate, .fee, .priceMoved].contains($0.kind) } }
 
     var body: some View {
         NavigationStack {
@@ -23,7 +23,8 @@ struct LeaksView: View {
                         HStack(spacing: 8) {
                             tile("SUBSCRIPTIONS", value: monthly.money + "/mo")
                             tile("FEES THIS YEAR", value: model.fees.total.money)
-                            tile("PRICE CHANGES", value: "\(priceUps.count)", color: priceUps.isEmpty ? Theme.Text.primary : Theme.Status.track)
+                            let moved = priceUps.count + model.pricesMovedLately.filter { $0.direction == .up }.count
+                            Button { model.pricesFilter = "up"; model.showPrices = true } label: { tile("PRICE CHANGES", value: "\(moved)", color: moved == 0 ? Theme.Text.primary : Theme.Status.track) }.buttonStyle(.plain)
                         }
                         .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s4)
                         if !leakInsights.isEmpty {

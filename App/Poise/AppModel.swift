@@ -75,6 +75,13 @@ final class AppModel {
     var showPushAsk: Bool { looksLinked && !askedForPush && pushStatus == .notDetermined && launch == .ready }
     struct MerchantRef: Identifiable, Sendable { let key: String; var id: String { key } }
     var selectedMerchant: MerchantRef?
+    /// Prices: what you pay for the things you buy again (PriceTracker), the list sheet, and the item open on top of it.
+    var priceItems: [PriceItem] = []
+    var showPrices = false
+    /// Which chip the Prices sheet opens on — "up" from the Leaks tile.
+    var pricesFilter = "all"
+    struct PriceItemRef: Identifiable, Sendable { let id: String }
+    var selectedPriceItem: PriceItemRef?
     /// What changed since the app was last in front. Nil when there's nothing to say.
     var since: Since?
     struct Since: Sendable {
@@ -212,6 +219,16 @@ final class AppModel {
             if args.contains("-open-merchant"), let t = transactions.first(where: { $0.kind == .spend }) { Task { try? await Task.sleep(for: .seconds(1)); selectedMerchant = .init(key: t.merchantKey) } }
             if args.contains("-since") { Task { try? await Task.sleep(for: .seconds(1)); showSince = true } }
             if args.contains("-widgets") { Task { try? await Task.sleep(for: .seconds(1)); showWidgetPreview = true } }
+            // `-seed-prices` names the seeded Amazon orders so an item exists; `-prices` opens the list; `-open-item` the first item.
+            if args.contains("-seed-prices") {
+                try await Backend.client.functions.invoke("financekit-sync", options: FunctionInvokeOptions(headers: ["content-type": "application/json"], body: DebugSeed.prices))
+                await reload()
+                for t in raw where t.id.hasPrefix("seed-price-") || t.merchant == "Amazon" && t.magnitude < 40 { await rename(t, to: "Naked Whey Protein", always: false) }
+            }
+            if args.contains("-prices") { Task { try? await Task.sleep(for: .seconds(1)); showPrices = true } }
+            // `-open-txn-item` opens the latest purchase of the first item (the sheet's price card + name suggestions).
+            if args.contains("-open-txn-item"), let item = pricesMovedLately.first ?? priceItems.first, let t = transactions.first(where: { $0.id == item.purchases.last?.id }) { Task { try? await Task.sleep(for: .seconds(1)); selectedTransaction = t } }
+            if args.contains("-open-item"), let item = pricesMovedLately.first ?? priceItems.first { Task { try? await Task.sleep(for: .seconds(1)); selectedPriceItem = .init(id: item.id) } }
             // `-push-provisional` registers for pushes without a prompt (quiet delivery), so the token → server → APNs chain can be checked.
             if args.contains("-push-provisional") {
                 _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.provisional, .alert, .sound])
@@ -421,7 +438,7 @@ final class AppModel {
     }
 
     private func resetState() {
-        accounts = []; hiddenAccounts = []; raw = []; transactions = []; streams = []; verdict = nil; pace = nil; cashflow = []; insights = []; reviewCards = []
+        accounts = []; hiddenAccounts = []; raw = []; transactions = []; streams = []; verdict = nil; pace = nil; cashflow = []; insights = []; reviewCards = []; priceItems = []
         lastSync = nil; institutions = []; relinkNeeded = []; walletLinked = false; walletAccessLost = false; settings = Repository.Settings(); isAnonymous = true; accountName = nil
         customCategories = []; watches = []; categories = .builtIn
         rememberedLinked = false; UserDefaults.standard.removeObject(forKey: "hasLinkedBefore"); UserDefaults.standard.removeObject(forKey: "onboardingDone")
@@ -604,6 +621,8 @@ final class AppModel {
             if let t = transactions.first(where: { $0.id == txnID }) { insightContext = insight; selectedTransaction = t } else { tab = .leaks }
         case .priceUp, .renewal, .newStream:
             if let s = streams.first(where: { insight.id.hasPrefix("price-\($0.id)") || insight.id.hasPrefix("renewal-\($0.id)") || insight.id.hasPrefix("new-\($0.id)") }) { selectedStream = s } else { tab = .leaks }
+        case .priceMoved:
+            if let item = priceItems.first(where: { insight.id.hasPrefix("price-item-\($0.id)-") }) { selectedPriceItem = .init(id: item.id) } else { showPrices = true }
         case .watchTriggered, .refundOverdue, .refundArrived: tab = .home; showWatching = true
         case .crunch, .statement: tab = .next14
         case .paceOverrun, .positive: tab = .pace
@@ -725,6 +744,45 @@ final class AppModel {
         else if !on, let existing { await removeWatch(existing) }
     }
 
+    // MARK: prices
+
+    func priceItem(id: String) -> PriceItem? { priceItems.first { $0.id == id } }
+
+    /// The item a charge belongs to: its name's item when it has one, else its merchant's.
+    func priceItem(for t: PoiseKit.Transaction) -> PriceItem? {
+        priceItems.first { item in item.purchases.contains { $0.id == t.id } }
+    }
+
+    /// Names already given to charges at this merchant — one tap to name the next purchase the same way.
+    func itemNames(at merchantKey: String) -> [String] {
+        priceItems.filter { $0.source == .named && $0.purchases.contains { PoiseKit.Transaction.merchantKey($0.merchant) == merchantKey } }.map(\.name)
+    }
+
+    /// The Prices list: what moved lately first, then everything else by how often it's bought.
+    var pricesMovedLately: [PriceItem] { priceItems.filter { $0.movedLately(now: .now) }.sorted { abs($0.deltaPercent) > abs($1.deltaPercent) } }
+    var pricesRest: [PriceItem] { priceItems.filter { !$0.movedLately(now: .now) }.sorted { ($0.count, $0.lastSeen) > ($1.count, $1.lastSeen) } }
+
+    /// Renames an item: a named run takes the new name on every purchase; a merchant item becomes the merchant's rule.
+    func renameItem(_ item: PriceItem, to name: String) async {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        let ids = Set(item.purchases.map(\.id))
+        if item.source == .named {
+            for i in raw.indices where ids.contains(raw[i].id) { raw[i].displayName = clean }
+            recompute()
+            for id in ids { do { try await repository.update(transactionID: id, displayName: clean) } catch { report(error); break } }
+        } else if let t = transactions.first(where: { ids.contains($0.id) }) {
+            await rename(t, to: clean, always: true)
+        }
+    }
+
+    /// "Tell me when the price moves": a watch whose matcher is the item id; the tracker raises the insight and the server the push.
+    func setPriceTracking(_ on: Bool, item: PriceItem) async {
+        let existing = watches.first { $0.kind == .price && $0.matcher == item.id && $0.status.isOpen }
+        if on, existing == nil { await addWatch(Watch(kind: .price, merchant: item.name, matcher: item.id)) }
+        else if !on, let existing { await removeWatch(existing) }
+    }
+
     // MARK: push
 
     /// Re-reads iOS's answer; an authorized phone re-registers every launch so the token stays current.
@@ -759,6 +817,7 @@ final class AppModel {
         if let id = hints["insight"], let ins = insights.first(where: { $0.id == id }) { open(ins); return }
         if let id = hints["transaction"], let t = transactions.first(where: { $0.id == id }) { selectedTransaction = t; return }
         if let id = hints["stream"], let s = streams.first(where: { $0.id == id }) { selectedStream = s; return }
+        if let id = hints["item"] { if priceItem(id: id) != nil { selectedPriceItem = .init(id: id) } else { showPrices = true }; return }
         if hints["review"] != nil { showReview = true; return }
         if let tab = hints["tab"], let t = Tab.allCases.first(where: { $0.rawValue.lowercased().replacingOccurrences(of: " ", with: "") == tab }) { self.tab = t }
     }
@@ -882,8 +941,17 @@ final class AppModel {
 
     // MARK: derived state
 
+    /// Logos come per row from Plaid; Wallet rows carry none. When a merchant has one anywhere, every row of it gets it.
+    private func fillLogos() {
+        var byKey: [String: String] = [:]
+        for t in raw.sorted(by: { $0.displayDate > $1.displayDate }) where t.logoURL != nil && byKey[t.merchantKey] == nil { byKey[t.merchantKey] = t.logoURL }
+        guard !byKey.isEmpty else { return }
+        for i in raw.indices where raw[i].logoURL == nil { if let url = byKey[raw[i].merchantKey] { raw[i].logoURL = url } }
+    }
+
     func recompute() {
-        guard hasLinkedBank else { verdict = nil; pace = nil; cashflow = []; insights = []; reviewCards = []; transactions = []; streams = []; publishWidgetSnapshot(); return }
+        fillLogos()
+        guard hasLinkedBank else { verdict = nil; pace = nil; cashflow = []; insights = []; reviewCards = []; transactions = []; streams = []; priceItems = []; publishWidgetSnapshot(); return }
         let now = Date.now
         var all = TransferDetector.pair(raw, accounts: accounts)
         all = RefundMatcher.match(all)
@@ -905,13 +973,15 @@ final class AppModel {
         let p = PaceEngine.pace(transactions: rows, streams: streams, now: now, categories: categories)
         cashflow = CashflowEngine.nextDays(accounts: accounts, streams: streams, transactions: rows, now: now, paysCardsInFull: settings.paysCardsInFull)
         let ranked = InsightEngine.rank(.init(verdict: v, pace: p, streams: streams, transactions: rows, now: now, acknowledged: acknowledged, dupMuted: Set(settings.dupMuted)))
-        let watchInsights = (WatchEngine.insights(watches, transactions: rows, now: now) + statementInsights(now: now)).filter { !acknowledged.contains($0.id) }
+        let tracked = Set(watches.filter { $0.kind == .price && $0.status.isOpen }.map(\.matcher))
+        priceItems = PriceTracker.items(in: all, now: now).map { var i = $0; i.tracked = tracked.contains(i.id); return i }
+        let watchInsights = (WatchEngine.insights(watches, transactions: rows, now: now) + statementInsights(now: now) + PriceTracker.insights(priceItems, now: now)).filter { !acknowledged.contains($0.id) }
         insights = (ranked + watchInsights).sorted { $0.rank < $1.rank }
         fees = Anomalies.feesYearToDate(rows, now: now)
         reviewCards = WeeklyReview.cards(transactions: rows, streams: streams, insights: insights, cashflow: cashflow, verdict: v, now: now, categories: categories)
         if pushStatus == .authorized || pushStatus == .provisional { Task { await scheduleLocal() } }
         // Anomalies count toward the status rule, so the verdict is finalized after ranking.
-        let anomalies = insights.filter { [.duplicate, .fee, .priceUp, .watchTriggered, .refundOverdue].contains($0.kind) }.count
+        let anomalies = insights.filter { [.duplicate, .fee, .priceUp, .watchTriggered, .refundOverdue, .priceMoved].contains($0.kind) }.count
         verdict = Verdict(status: VerdictEngine.status(ahead: v.ahead, kept: v.kept, target: input.keptTarget, anomalies: anomalies), ahead: v.ahead, kept: v.kept)
         publishWidgetSnapshot()
         pace = p

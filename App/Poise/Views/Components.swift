@@ -107,6 +107,7 @@ extension Insight.Kind {
         case .refundOverdue: "arrow.uturn.backward"
         case .refundArrived: "checkmark"
         case .statement: "creditcard"
+        case .priceMoved: "tag"
         }
     }
 }

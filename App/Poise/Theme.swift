@@ -60,6 +60,7 @@ enum Theme {
         static let footnote = SwiftUI.Font.system(size: 13)
         static let caption = SwiftUI.Font.system(size: 12)
         static let captionStrong = SwiftUI.Font.system(size: 12, weight: .medium)
+        static let caption2 = SwiftUI.Font.system(size: 11)
         static let caption2Strong = SwiftUI.Font.system(size: 11, weight: .semibold)
         static let moneyXL = SwiftUI.Font.system(size: 44, weight: .semibold, design: .rounded)
         static let moneyLG = SwiftUI.Font.system(size: 28, weight: .semibold, design: .rounded)

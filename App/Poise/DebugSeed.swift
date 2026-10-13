@@ -64,6 +64,24 @@ enum DebugSeed {
         return "{\"transactions\": [\(rows.joined(separator: ","))]}"
     }
 
+    /// `-seed-prices`: seven Amazon orders at the design's prices (29.99 ×2, 27.49, 29.99 ×2, 34.99 ×2) plus six Chipotle
+    /// burritos, so the Prices screens have an item that moved and one that didn't.
+    static var prices: String {
+        let cal = Calendar.current, card = "DEB00000-0000-0000-0000-000000000001"
+        func row(_ id: String, _ amount: Double, _ desc: String, _ merchant: String, mcc: Int, _ d: Date, pending: Bool = false) -> String {
+            let day = WalletSource.Payload.day(d)
+            return "{\"id\": \"\(id)\", \"accountID\": \"\(card)\", \"amount\": \(amount), \"currency\": \"USD\", \"debit\": true, \"description\": \"\(desc)\", \"merchant\": \"\(merchant)\", \"mcc\": \(mcc), \"type\": \"pointOfSale\", \"status\": \"\(pending ? "pending" : "booked")\", \"date\": \"\(day)\", \"postedDate\": \"\(day)\"}"
+        }
+        let today = cal.startOfDay(for: .now)
+        let back = { (days: Int) in cal.date(byAdding: .day, value: -days, to: today)! }
+        var rows: [String] = []
+        for (i, (price, days)) in [(29.99, 228), (29.99, 194), (27.49, 152), (29.99, 110), (29.99, 67), (34.99, 38), (34.99, 0)].enumerated() {
+            rows.append(row("seed-price-\(i)", price, "AMAZON.COM*2K4PL9", "Amazon", mcc: 5942, back(days), pending: days == 0))
+        }
+        for i in 0..<6 { rows.append(row("seed-burrito-\(i)", i == 5 ? 16.20 : 14.20, "CHIPOTLE 1234", "Chipotle", mcc: 5814, back(150 - i * 28))) }
+        return "{\"transactions\": [\(rows.joined(separator: ","))]}"
+    }
+
     static let more = """
     {"transactions": [
       {"id": "seed-more-\(Int(Date.now.timeIntervalSince1970))", "accountID": "DEB00000-0000-0000-0000-000000000001", "amount": 48.10, "currency": "USD", "debit": true, "description": "Shell", "merchant": "Shell", "mcc": 5541, "type": "pointOfSale", "status": "booked", "date": "\(WalletSource.Payload.day(.now))", "postedDate": "\(WalletSource.Payload.day(.now))"}]}
