@@ -1,0 +1,318 @@
+import SwiftUI
+import PoiseKit
+
+/// What you pay for the things you buy again: what moved lately, then everything else. A row opens the item.
+struct PricesView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var filter = "all"
+    @State private var selected: AppModel.PriceItemRef?
+
+    private var moved: [PriceItem] { model.pricesMovedLately.filter(passes) }
+    private var rest: [PriceItem] { model.pricesRest.filter(passes) }
+    private func passes(_ i: PriceItem) -> Bool {
+        switch filter {
+        case "tracked": i.tracked
+        case "up": i.direction == .up
+        case "down": i.direction == .down
+        default: true
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 0) {
+                    Text("What you pay for the things you buy again — a merchant’s repeat charges on their own, and anything you’ve named. No price-tracking app needed.")
+                        .font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach([("all", "All"), ("tracked", "Tracked"), ("up", "Up"), ("down", "Down")], id: \.0) { key, label in
+                                Chip(label: label, symbol: key == "up" ? "arrow.up.right" : key == "down" ? "arrow.down.right" : key == "tracked" ? "eye" : "line.3.horizontal.decrease", on: filter == key) { withAnimation(.snappy) { filter = key } }
+                            }
+                        }
+                        .padding(.horizontal, Theme.Spacing.s16)
+                    }
+                    .padding(.top, Theme.Spacing.s12)
+                    if moved.isEmpty, rest.isEmpty {
+                        Card { EmptyStateView(symbol: "chart.line.uptrend.xyaxis", title: filter == "all" ? "Nothing to compare yet" : "Nothing here", body: filter == "all" ? "Poise needs a few purchases of the same thing. Name a charge to start tracking one item from a store that sells everything." : "Change the filter to see the rest.") }
+                            .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s16)
+                    }
+                    if !moved.isEmpty {
+                        SectionHeader(title: "Moved lately")
+                        list(moved)
+                    }
+                    if !rest.isEmpty {
+                        SectionHeader(title: moved.isEmpty ? "Things you buy again" : "Everything you buy again")
+                        list(rest)
+                    }
+                    Text("Name a charge (“Call it”) and every purchase with that name becomes an item here — the way to follow one thing from a store that sells everything.")
+                        .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
+                }
+                .padding(.bottom, Theme.Spacing.s32)
+            }
+            .background(Theme.Bg.base)
+            .navigationTitle("Prices")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.tint(Theme.Accent.default) } }
+            .sheet(item: $selected) { ref in PriceItemView(itemID: ref.id) }
+            .onAppear { filter = model.pricesFilter; model.pricesFilter = "all" }
+        }
+    }
+
+    private func list(_ items: [PriceItem]) -> some View {
+        Card {
+            ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
+                Button { selected = .init(id: item.id) } label: { PriceItemRow(item: item) }.buttonStyle(.plain)
+                if i < items.count - 1 { RowDivider() }
+            }
+        }
+        .padding(.horizontal, Theme.Spacing.s16)
+    }
+}
+
+/// One item in the list: what it is, how often, the usual price, a sparkline, and the last price with its move.
+struct PriceItemRow: View {
+    @Environment(AppModel.self) private var model
+    let item: PriceItem
+
+    var body: some View {
+        HStack(spacing: 10) {
+            MerchantCircle(logoURL: item.logoURL, symbol: model.categories.symbol(item.categoryID), size: 40)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.displayName).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1)
+                Text("\(item.source == .named ? item.merchant.prettyMerchant + " · " : "")\(item.count)× · usually \(item.usual.money2)").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Sparkline(values: item.purchases.suffix(8).map { NSDecimalNumber(decimal: $0.price).doubleValue }, color: item.tone).frame(width: 28, height: 12)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(item.last.money2).font(Theme.Font.moneyMD).foregroundStyle(Theme.Text.primary)
+                Text(item.deltaLabel).font(Theme.Font.captionStrong).foregroundStyle(item.tone)
+            }
+        }
+        .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16).contentShape(Rectangle())
+    }
+}
+
+extension PriceItem {
+    var displayName: String { source == .named ? name : name.prettyMerchant }
+    var tone: Color { direction == .up ? Theme.Status.track : direction == .down ? Theme.Status.good : Theme.Text.tertiary }
+    /// "▲ $5.00 · 17%", "▼ $6.30 · 12%", or "steady".
+    var deltaLabel: String {
+        switch direction {
+        case .steady: return "steady"
+        case .up: return "▲ \(delta.money2) · \(Int((deltaPercent * 100).rounded()))%"
+        case .down: return "▼ \((-delta).money2) · \(Int((-deltaPercent * 100).rounded()))%"
+        }
+    }
+}
+
+/// A tiny line of the last few prices.
+struct Sparkline: View {
+    let values: [Double]
+    var color: Color = Theme.Text.tertiary
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            let lo = values.min() ?? 0, hi = values.max() ?? 1
+            Path { p in
+                for (i, v) in values.enumerated() {
+                    let x = values.count > 1 ? w * CGFloat(i) / CGFloat(values.count - 1) : w / 2
+                    let y = hi > lo ? h - h * CGFloat((v - lo) / (hi - lo)) : h / 2
+                    if i == 0 { p.move(to: CGPoint(x: x, y: y)) } else { p.addLine(to: CGPoint(x: x, y: y)) }
+                }
+            }
+            .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+        }
+    }
+}
+
+/// One item: last / usual / lowest, the run of prices, what changed, every purchase, and the switches.
+struct PriceItemView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let itemID: String
+    @State private var selected: PoiseKit.Transaction?
+    @State private var renaming = false
+    @State private var newName = ""
+    @State private var filing = false
+
+    private var item: PriceItem? { model.priceItem(id: itemID) }
+    private var sample: PoiseKit.Transaction? { item?.purchases.last.flatMap { p in model.transactions.first { $0.id == p.id } } }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                if let item, let sample {
+                    VStack(spacing: 0) {
+                        VStack(spacing: 4) {
+                            MerchantCircle(logoURL: item.logoURL, symbol: model.categories.symbol(item.categoryID), size: 64)
+                            Text(item.displayName).font(Theme.Font.titleMD).foregroundStyle(Theme.Text.primary).multilineTextAlignment(.center).padding(.top, 4)
+                            Text("\(model.categories.resolve(item.categoryID).name)\(item.source == .named ? " · \(item.merchant.prettyMerchant)" : "") · \(item.count) purchase\(item.count == 1 ? "" : "s") since \(item.firstSeen.formatted(.dateTime.month(.abbreviated).year()))")
+                                .font(Theme.Font.subhead).foregroundStyle(Theme.Text.secondary).multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity).padding(.top, Theme.Spacing.s12).padding(.bottom, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
+                        HStack(spacing: 8) {
+                            tile("LAST", item.last.money2)
+                            tile("USUALLY", item.usual.money2)
+                            tile("LOWEST", item.lowest.money2)
+                        }
+                        .padding(.horizontal, Theme.Spacing.s16)
+                        PriceChart(item: item).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
+                        if item.direction != .steady { callout(item).padding(.top, Theme.Spacing.s12) }
+
+                        SectionHeader(title: "Purchases · \(item.count)")
+                        Card {
+                            let rows = item.purchases.reversed().compactMap { p in model.transactions.first { $0.id == p.id } }
+                            ForEach(Array(rows.enumerated()), id: \.element.id) { i, t in
+                                Button { selected = t } label: { TransactionRowView(transaction: t, account: model.accounts.first { $0.id == t.accountID }, showsDate: true) }.buttonStyle(.plain)
+                                if i < rows.count - 1 { RowDivider() }
+                            }
+                        }
+                        .padding(.horizontal, Theme.Spacing.s16)
+
+                        SectionHeader(title: "Manage")
+                        Card {
+                            NavRow(symbol: "pencil", label: "Call it", value: item.displayName) { newName = item.source == .named ? item.name : (sample.displayName ?? ""); renaming = true }
+                            RowDivider()
+                            NavRow(symbol: "tag", label: "File under", value: model.categories.resolve(item.categoryID).name) { filing = true }
+                            RowDivider()
+                            ToggleRow(label: "Tell me when the price moves", isOn: Binding(get: { item.tracked }, set: { on in Task { await model.setPriceTracking(on, item: item) } }))
+                        }
+                        .padding(.horizontal, Theme.Spacing.s16)
+                        Text(item.tracked ? "The next purchase at a different price becomes a heads-up the moment it lands." : (item.source == .named ? "Poise groups every charge you’ve named “\(item.name)”. Name the next one the same way and it joins the run." : "Every charge from \(item.merchant.prettyMerchant) counts as one thing because they cost about the same."))
+                            .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s8)
+                    }
+                    .padding(.bottom, Theme.Spacing.s32)
+                } else {
+                    EmptyStateView(symbol: "chart.line.uptrend.xyaxis", title: "Nothing here", body: "This item has no purchases in the feed any more.").padding(.top, 80)
+                }
+            }
+            .background(Theme.Bg.base)
+            .navigationTitle(item?.displayName ?? "Item")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.tint(Theme.Accent.default) } }
+            .sheet(item: $selected) { t in TransactionDetailView(transaction: t) }
+            .sheet(isPresented: $filing) { if let sample { FileUnderSheet(sample: sample) } }
+            .alert("Call it", isPresented: $renaming) {
+                TextField(item?.displayName ?? "Name", text: $newName)
+                Button("Save") { if let item { Task { await model.renameItem(item, to: newName) } } }
+                Button("Cancel", role: .cancel) {}
+            } message: { Text(item?.source == .named ? "Every purchase in this run takes the new name." : "Every charge from \(item?.merchant.prettyMerchant ?? "this merchant") will read this way.") }
+        }
+    }
+
+    private func tile(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary)
+            Text(value).font(Theme.Font.moneyMD).foregroundStyle(Theme.Text.primary)
+        }
+        .padding(Theme.Spacing.s12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.Bg.elevated, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous).strokeBorder(Theme.Border.subtle))
+    }
+
+    /// "Up $5.00 since July" — what changed, in one breath, and what to do about it.
+    private func callout(_ item: PriceItem) -> some View {
+        let up = item.direction == .up
+        let since = item.changedAt.map { " since \($0.formatted(.dateTime.month(.wide)))" } ?? ""
+        let pct = Int((abs(item.deltaPercent) * 100).rounded())
+        let held = item.purchases.reversed().prefix { $0.price == item.last }.count
+        let body = "\(item.usual.money2) → \(item.last.money2)" + (held > 1 ? ", and it’s stayed there \(held == 2 ? "twice" : "\(held) times")." : ".")
+            + (up ? " That’s \(pct)% more for the same thing — worth a look at other sellers before the next one." : " That’s \(pct)% less than usual — a good time to stock up.")
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: up ? "arrow.up.right" : "arrow.down.right").font(.system(size: 15, weight: .semibold)).foregroundStyle(up ? Theme.Status.track : Theme.Status.good).padding(.top, 2)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(up ? "Up" : "Down") \(abs(item.delta).money2)\(since)").font(Theme.Font.subheadStrong).foregroundStyle(Theme.Text.primary)
+                Text(body).font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Theme.Spacing.s16)
+        .background(up ? Theme.Status.trackBg : Theme.Status.goodBg, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+        .padding(.horizontal, Theme.Spacing.s16)
+    }
+}
+
+/// The run of prices over time: gridlines with the $ scale on the left, an area under the line, a dot per purchase,
+/// the lowest one in green with its price, the latest ringed with its price, months along the bottom.
+struct PriceChart: View {
+    let item: PriceItem
+
+    var body: some View {
+        let points = item.purchases
+        let prices = points.map { NSDecimalNumber(decimal: $0.price).doubleValue }
+        let lo = (prices.min() ?? 0), hi = (prices.max() ?? 1)
+        let pad = max(1, (hi - lo) * 0.35)
+        let yMin = max(0, floor(lo - pad)), yMax = ceil(hi + pad)
+        let start = points.first?.date ?? .now, end = points.last?.date ?? .now
+        let span = max(end.timeIntervalSince(start), 86_400 * 30)
+        return VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
+            HStack {
+                Text("PRICE PAID").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary)
+                Spacer()
+                Text("\(start.formatted(.dateTime.month(.abbreviated)))\(Calendar.current.isDate(start, equalTo: end, toGranularity: .month) ? "" : " – \(end.formatted(.dateTime.month(.abbreviated)))") · \(item.count) purchase\(item.count == 1 ? "" : "s")").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+            }
+            GeometryReader { geo in
+                let labelW: CGFloat = 34, top: CGFloat = 14, bottom = geo.size.height - 20
+                let plotW = geo.size.width - labelW
+                let x: (Date) -> CGFloat = { d in labelW + 8 + CGFloat(d.timeIntervalSince(start) / span) * (plotW - 16) }
+                let y: (Double) -> CGFloat = { p in top + CGFloat((yMax - p) / max(yMax - yMin, 1)) * (bottom - top) }
+                let ticks = [yMax, (yMax + yMin) / 2, yMin]
+                ZStack(alignment: .topLeading) {
+                    ForEach(ticks, id: \.self) { t in
+                        Path { p in p.move(to: CGPoint(x: labelW, y: y(t))); p.addLine(to: CGPoint(x: geo.size.width, y: y(t))) }.stroke(Theme.Border.subtle, lineWidth: 1)
+                        Text(Decimal(t).money).font(Theme.Font.caption2).foregroundStyle(Theme.Text.tertiary).position(x: 14, y: y(t))
+                    }
+                    if points.count > 1 {
+                        Path { p in
+                            p.move(to: CGPoint(x: x(points[0].date), y: bottom))
+                            for pt in points { p.addLine(to: CGPoint(x: x(pt.date), y: y(NSDecimalNumber(decimal: pt.price).doubleValue))) }
+                            p.addLine(to: CGPoint(x: x(points.last!.date), y: bottom)); p.closeSubpath()
+                        }
+                        .fill(Theme.Accent.subtle)
+                        Path { p in
+                            for (i, pt) in points.enumerated() { let c = CGPoint(x: x(pt.date), y: y(NSDecimalNumber(decimal: pt.price).doubleValue)); if i == 0 { p.move(to: c) } else { p.addLine(to: c) } }
+                        }
+                        .stroke(Theme.Accent.default, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    }
+                    let lowIndex = points.firstIndex { $0.price == item.lowest }
+                    ForEach(Array(points.enumerated()), id: \.element.id) { i, pt in
+                        let last = i == points.count - 1, low = i == lowIndex && !last
+                        let c = CGPoint(x: x(pt.date), y: y(NSDecimalNumber(decimal: pt.price).doubleValue))
+                        Circle().fill(low ? Theme.Status.good : Theme.Accent.default)
+                            .overlay(Circle().strokeBorder(Theme.Bg.elevated, lineWidth: last ? 2 : 0))
+                            .frame(width: last ? 10 : 6, height: last ? 10 : 6).position(c)
+                        if last { Text(pt.price.money2).font(Theme.Font.captionStrong).foregroundStyle(Theme.Text.primary).position(x: min(c.x, geo.size.width - 22), y: c.y - 14) }
+                        else if low { Text(pt.price.money2).font(Theme.Font.captionStrong).foregroundStyle(Theme.Status.good).position(x: c.x, y: c.y + 14) }
+                    }
+                    let months = monthMarks(from: start, to: end)
+                    ForEach(months, id: \.self) { m in
+                        Text(m.formatted(.dateTime.month(.abbreviated))).font(Theme.Font.caption2).foregroundStyle(Theme.Text.tertiary).position(x: x(m), y: geo.size.height - 6)
+                    }
+                }
+            }
+            .frame(height: 140)
+        }
+        .padding(Theme.Spacing.s16)
+        .background(Theme.Bg.elevated, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous).strokeBorder(Theme.Border.subtle))
+    }
+
+    /// The first of each month across the run, thinned so labels don't collide (at most eight).
+    private func monthMarks(from: Date, to: Date) -> [Date] {
+        let cal = Calendar.current
+        var out: [Date] = []
+        var d = cal.date(from: cal.dateComponents([.year, .month], from: from)) ?? from
+        if d < from {
+            // The run starts mid-month: label that month at the first purchase unless the next mark is right on top of it.
+            let next = cal.date(byAdding: .month, value: 1, to: d) ?? d
+            if (cal.dateComponents([.day], from: from, to: next).day ?? 0) >= 20 { out.append(from) }
+            d = next
+        }
+        while d <= to { out.append(d); d = cal.date(byAdding: .month, value: 1, to: d) ?? to.addingTimeInterval(1) }
+        let step = max(1, Int(ceil(Double(out.count) / 8)))
+        return out.enumerated().filter { $0.offset % step == 0 }.map(\.element)
+    }
+}

@@ -92,7 +92,7 @@ struct MerchantView: View {
 }
 
 /// "File under": the category rule for a merchant, as chips.
-private struct FileUnderSheet: View {
+struct FileUnderSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let sample: PoiseKit.Transaction
