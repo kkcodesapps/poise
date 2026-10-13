@@ -1,7 +1,8 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { plaid, type PlaidAccount, type SyncResponse } from "./plaid.ts";
 import { decrypt } from "./crypto.ts";
-import { classify, merchantKey, roleFor } from "./classify.ts";
+import { classify, merchantKey, roleFor, ruleKind } from "./classify.ts";
+import { notifyAfterSync, notifyWatchTriggered, type WrittenRow } from "./notify.ts";
 
 export interface ItemRow {
   id: string;
@@ -39,8 +40,9 @@ export async function upsertAccounts(db: SupabaseClient, item: ItemRow, accounts
   return new Map((data ?? []).map((r: { id: string; provider_account_id: string }) => [r.provider_account_id, r.id]));
 }
 
-/** Walks /transactions/sync from the stored position, applying merchant rules, until the provider has no more. */
-export async function syncItem(db: SupabaseClient, item: ItemRow): Promise<{ added: number; modified: number; removed: number }> {
+/** Walks /transactions/sync from the stored position, applying merchant rules, until the provider has no more.
+ *  `notify` is off for an item's first walk (nobody wants 90 days of pushes) and on for webhooks. */
+export async function syncItem(db: SupabaseClient, item: ItemRow, notify = true): Promise<{ added: number; modified: number; removed: number }> {
   const token = await decrypt(item.access_token_enc);
   const { data: ruleRows } = await db.from("merchant_rules").select("matcher, category, kind").eq("user_id", item.user_id);
   const rules = new Map((ruleRows ?? []).map((r: { matcher: string; category: string | null; kind: string | null }) => [r.matcher, r]));
@@ -76,16 +78,18 @@ export async function syncItem(db: SupabaseClient, item: ItemRow): Promise<{ add
         raw_name: t.name,
         authorized_date: t.authorized_date ?? null,
         posted_date: t.date,
-        kind: rule?.kind ?? auto.kind,
+        kind: ruleKind(rule?.kind, t.amount < 0) ?? auto.kind,
         category: rule?.category ?? auto.category,
         provider_category: t.personal_finance_category?.detailed ?? null,
         classified_by: rule ? "rule" : "auto",
+        logo_url: t.logo_url ?? t.counterparties?.find((c) => c.logo_url)?.logo_url ?? null,
       }];
     });
     if (rows.length) {
-      const { data: written, error } = await db.from("transactions").upsert(rows, { onConflict: "account_id,provider_txn_id" }).select("id, merchant, posted_date, kind, pending");
+      const { data: written, error } = await db.from("transactions").upsert(rows, { onConflict: "account_id,provider_txn_id" }).select("id, merchant, posted_date, kind, pending, amount, provider_category, account_id, created_at, category");
       if (error) throw error;
-      await triggerMerchantWatches(db, item.user_id, written ?? []);
+      await triggerMerchantWatches(db, item.user_id, (written ?? []) as WrittenRow[], notify);
+      await notifyAfterSync(db, item.user_id, (written ?? []) as WrittenRow[], { firstSync: !notify });
     }
     if (res.removed.length) {
       const { error } = await db.from("transactions")
@@ -106,12 +110,15 @@ export async function syncItem(db: SupabaseClient, item: ItemRow): Promise<{ add
 }
 
 
-/** A charge from a merchant the user asked to be told about: mark the watch triggered (the push rides on this later). */
-export async function triggerMerchantWatches(db: SupabaseClient, userID: string, rows: { id: string; merchant: string; posted_date: string; kind: string }[]) {
-  const { data: watches } = await db.from("watches").select("id, matcher, created_at").eq("user_id", userID).eq("kind", "merchant").eq("status", "watching");
+/** A charge from a merchant the user asked to be told about: mark the watch triggered, and say so. */
+export async function triggerMerchantWatches(db: SupabaseClient, userID: string, rows: { id: string; merchant: string; posted_date: string; kind: string; amount?: number }[], notify = true) {
+  const { data: watches } = await db.from("watches").select("id, matcher, merchant, created_at").eq("user_id", userID).eq("kind", "merchant").eq("status", "watching");
   if (!watches?.length) return;
   for (const w of watches) {
     const hit = rows.find((r) => (r.kind === "spend" || r.kind === "untracked") && merchantKey(r.merchant) === w.matcher && new Date(r.posted_date) > new Date(w.created_at));
-    if (hit) await db.from("watches").update({ status: "triggered", resolved_at: new Date().toISOString(), resolved_transaction_id: hit.id }).eq("id", w.id);
+    if (hit) {
+      await db.from("watches").update({ status: "triggered", resolved_at: new Date().toISOString(), resolved_transaction_id: hit.id }).eq("id", w.id);
+      if (notify) await notifyWatchTriggered(db, userID, w.merchant, hit.amount ?? 0, hit.id);
+    }
   }
 }

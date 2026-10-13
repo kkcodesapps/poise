@@ -1,0 +1,100 @@
+import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
+import { merchantKey } from "./classify.ts";
+import { pushPrefs, sendPush } from "./apns.ts";
+
+// What a sync should tell the phone about. Runs after rows are written; never on an item's first walk.
+
+export interface WrittenRow {
+  id: string; merchant: string; posted_date: string; kind: string; pending: boolean;
+  amount: number; provider_category: string | null; account_id: string; created_at: string; category: string | null;
+}
+
+const money = (n: number) => `$${Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
+const money0 = (n: number) => `$${Math.round(Math.abs(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
+const pretty = (s: string) => { const t = s.replace(/[*#/]+/g, " ").replace(/\s+/g, " ").trim(); return /^[^a-z]*$/.test(t) && t.replace(/[^A-Za-z]/g, "").length > 3 ? t.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()) : t; };
+const builtIn: Record<string, string> = { home: "Home", groceries: "Groceries", dining: "Dining", transport: "Transport", shopping: "Shopping", subscriptions: "Subscriptions", health: "Health", fun: "Fun", other: "Other" };
+
+export async function notifyAfterSync(db: SupabaseClient, userID: string, written: WrittenRow[], opts: { firstSync: boolean }) {
+  if (opts.firstSync || !written.length) return;
+  const now = Date.now();
+  const cutoff = new Date(now - 3 * 86_400_000).toISOString().slice(0, 10);
+  // Rows inserted by this very sync (the upsert echoes updates too), and recent enough to be news.
+  const fresh = written.filter((r) => now - new Date(r.created_at).getTime() < 120_000 && r.posted_date >= cutoff);
+  if (!fresh.length) return;
+  const prefs = await pushPrefs(db, userID);
+  const { data: accts } = await db.from("accounts").select("id, name, hidden").in("id", [...new Set(fresh.map((r) => r.account_id))]);
+  const accountName = new Map((accts ?? []).map((a: { id: string; name: string }) => [a.id, a.name]));
+  const hiddenIDs = new Set((accts ?? []).filter((a: { hidden: boolean }) => a.hidden).map((a: { id: string }) => a.id));
+  const rows = fresh.filter((r) => !hiddenIDs.has(r.account_id));
+  if (!rows.length) return;
+
+  const categoryName = async (id: string | null) => {
+    if (!id) return null;
+    if (builtIn[id]) return builtIn[id];
+    const { data } = await db.from("categories").select("name").eq("id", id).maybeSingle();
+    return data?.name ?? null;
+  };
+
+  // --- new spend: one push per sync, batched when several land together
+  const isFee = (r: WrittenRow) => (r.provider_category ?? "").startsWith("BANK_FEES");
+  const spend = rows.filter((r) => (r.kind === "spend" || r.kind === "untracked") && r.amount < 0 && !isFee(r));   // fees get their own line
+  if (prefs.spend && spend.length && spend.length <= 20) {
+    if (spend.length === 1) {
+      const r = spend[0];
+      const cat = await categoryName(r.category);
+      await sendPush(db, userID, {
+        kind: "spend", title: `${money(r.amount)} at ${pretty(r.merchant)}${cat ? ` · ${cat}` : ""}`,
+        body: `${r.pending ? "Pending · " : ""}${accountName.get(r.account_id) ?? "Your account"}`,
+        data: { transaction: r.id }, collapseID: `spend-${r.id}`,
+      });
+    } else {
+      const total = spend.reduce((a, r) => a + Math.abs(r.amount), 0);
+      const names = [...new Set(spend.map((r) => pretty(r.merchant)))].slice(0, 3).join(", ");
+      await sendPush(db, userID, { kind: "spend", title: `${spend.length} charges · ${money(total)}`, body: names + (spend.length > 3 ? " and more" : ""), data: { tab: "home" } });
+    }
+  }
+
+  if (!prefs.heads_up) return;
+
+  // --- fees
+  for (const r of rows.filter((r) => isFee(r) && r.amount < 0)) {
+    await sendPush(db, userID, { kind: "heads", title: `${money(r.amount)} fee at ${pretty(r.merchant)}`, body: "Fees add up in Leaks. Banks often waive the first one you ask about.", data: { transaction: r.id }, collapseID: `fee-${r.id}` });
+  }
+
+  // --- charged twice: same merchant, same card, same amount, same day — the shape of one purchase posting twice.
+  // Mirrors Anomalies.duplicates on the phone: nothing under $10, nothing habitual, nothing the user muted.
+  const { data: prefRow } = await db.from("settings").select("dup_muted").eq("user_id", userID).maybeSingle();
+  const muted = new Set<string>((prefRow?.dup_muted ?? []) as string[]);
+  for (const r of spend) {
+    if (Math.abs(r.amount) < 10 || muted.has(merchantKey(r.merchant))) continue;
+    const { data: twins } = await db.from("transactions").select("id, merchant, posted_date").eq("user_id", userID).eq("amount", r.amount)
+      .eq("account_id", r.account_id).eq("posted_date", r.posted_date).neq("id", r.id).is("deleted_at", null).limit(5);
+    const twin = (twins ?? []).find((t: { merchant: string }) => merchantKey(t.merchant) === merchantKey(r.merchant));
+    if (!twin) continue;
+    const from = new Date(new Date(r.posted_date).getTime() - 90 * 86_400_000).toISOString().slice(0, 10);
+    const { data: same } = await db.from("transactions").select("id, merchant").eq("user_id", userID).eq("amount", r.amount)
+      .gte("posted_date", from).lte("posted_date", r.posted_date).is("deleted_at", null).limit(50);
+    const habitual = (same ?? []).filter((t: { merchant: string }) => merchantKey(t.merchant) === merchantKey(r.merchant)).length >= 4;
+    if (habitual) continue;
+    await sendPush(db, userID, { kind: "heads", title: `Charged twice at ${pretty(r.merchant)}?`, body: `${money(r.amount)} twice today on the same card. Tap to look.`, data: { transaction: r.id, insight: `dup-${r.id}` }, collapseID: `dup-${r.id}` });
+  }
+
+  // --- a refund you were waiting on
+  const refunds = rows.filter((r) => r.kind === "refund" && r.amount > 0);
+  if (refunds.length) {
+    const { data: waiting } = await db.from("watches").select("id, matcher, merchant").eq("user_id", userID).eq("kind", "refund").in("status", ["waiting", "overdue"]);
+    for (const r of refunds) {
+      const w = (waiting ?? []).find((w: { matcher: string }) => w.matcher === merchantKey(r.merchant));
+      if (w) await sendPush(db, userID, { kind: "heads", title: `${pretty(w.merchant)} refund arrived · ${money(r.amount)}`, body: "The watch closes itself the next time Poise opens.", data: { transaction: r.id }, collapseID: `refund-${w.id}` });
+    }
+  }
+}
+
+/** A merchant the user asked to hear about just charged again. Called where the watch is marked triggered. */
+export async function notifyWatchTriggered(db: SupabaseClient, userID: string, merchant: string, amount: number, transactionID: string) {
+  const prefs = await pushPrefs(db, userID);
+  if (!prefs.heads_up) return;
+  await sendPush(db, userID, { kind: "heads", title: `${pretty(merchant)} charged again · ${money(amount)}`, body: "You asked to hear about it. Tap to look.", data: { transaction: transactionID }, collapseID: `watch-${transactionID}` });
+}
+
+export { money0 };

@@ -18,9 +18,11 @@ Deno.serve(async (req) => {
       const { data: item } = await admin().from("items").select("access_token_enc").eq("id", item_id).eq("user_id", user.id).single();
       if (!item) return json({ error: "item not found" }, 404);
       base.access_token = await decrypt(item.access_token_enc);
+      base.transactions = { days_requested: 730 };       // update mode can pull the longer history too
     } else {
       base.products = ["transactions"];
-      base.transactions = { days_requested: 90 };
+      base.optional_products = ["liabilities"];          // card statements, where the bank supports it
+      base.transactions = { days_requested: 730 };       // two years: annual renewals seen twice, Where's year view full
     }
     const res = await plaid<{ link_token: string; expiration: string }>("/link/token/create", base);
     return json({ link_token: res.link_token, expiration: res.expiration });

@@ -51,6 +51,15 @@ export function classifyCategory(primary: string, detailed: string, inflow: bool
   }
 }
 
+/** A merchant rule says what a merchant *is*; the row's direction still decides spend vs refund. "Always spend"
+ *  on a refund is a refund; "always refund" on a charge is a charge. Transfers, payments and income apply as written. */
+export function ruleKind(ruleKind: string | null | undefined, inflow: boolean): Kind | null {
+  if (!ruleKind) return null;
+  if (ruleKind === "spend") return inflow ? "refund" : "spend";
+  if (ruleKind === "refund") return inflow ? "refund" : "spend";
+  return ruleKind as Kind;
+}
+
 /** Fee detection for the Leaks tab; stored via provider_category, surfaced by the client. */
 export const isFee = (t: PlaidTransaction) => (t.personal_finance_category?.primary ?? "") === "BANK_FEES";
 

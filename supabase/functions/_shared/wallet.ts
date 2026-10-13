@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
-import { classifyCategory, merchantKey, type Role } from "./classify.ts";
+import { classifyCategory, merchantKey, ruleKind, type Role } from "./classify.ts";
 import { triggerMerchantWatches } from "./sync.ts";
+import { notifyAfterSync, type WrittenRow } from "./notify.ts";
 
 // Apple Card, Apple Cash and Savings arrive from the phone (FinanceKit), not from a provider webhook.
 // The app sends what Wallet holds; this module turns it into the same rows the Plaid sync writes.
@@ -9,6 +10,7 @@ import { triggerMerchantWatches } from "./sync.ts";
 export interface WalletAccount {
   id: string; name: string; description?: string | null; institution: string; currency: string;
   kind: "asset" | "liability"; creditLimit?: number | null;
+  nextPaymentDue?: string | null; minimumPayment?: number | null;      // cards: Wallet's creditInformation
 }
 export interface WalletMoney { amount: number; debit: boolean }
 export interface WalletBalance { accountID: string; available?: WalletMoney | null; booked?: WalletMoney | null; asOf: string }
@@ -68,6 +70,11 @@ export async function upsertWalletAccounts(db: SupabaseClient, item: WalletItem,
         name: a.name, mask: null, type: liability ? "credit" : "depository", subtype: a.name.toLowerCase(),
         available, current, credit_limit: a.creditLimit ?? null, currency: a.currency || "USD",
         balance_at: b?.asOf ?? new Date().toISOString(),
+        // A card's statement: Wallet gives the date and the minimum but not the balance — the app rebuilds that from
+        // the rows (StatementEstimator), so nothing is guessed here.
+        statement_due: liability ? (a.nextPaymentDue ?? null) : null,
+        statement_amount: null,
+        minimum_due: liability ? (a.minimumPayment ?? null) : null,
       };
     });
     const { data: existing } = await db.from("accounts").select("provider_account_id").eq("item_id", item.id);
@@ -202,7 +209,7 @@ export async function applyWallet(db: SupabaseClient, item: WalletItem, body: Wa
       raw_name: t.description,
       authorized_date: t.date,
       posted_date: t.postedDate ?? t.date,
-      kind: rule?.kind ?? auto.kind,
+      kind: ruleKind(rule?.kind, !out) ?? auto.kind,
       category: rule?.category ?? auto.category,
       provider_category: detailed,
       classified_by: rule ? "rule" : "auto",
@@ -210,9 +217,12 @@ export async function applyWallet(db: SupabaseClient, item: WalletItem, body: Wa
     }];
   });
   if (rows.length) {
-    const { data: written, error } = await db.from("transactions").upsert(rows, { onConflict: "account_id,provider_txn_id" }).select("id, merchant, posted_date, kind, pending");
+    const { data: written, error } = await db.from("transactions").upsert(rows, { onConflict: "account_id,provider_txn_id" }).select("id, merchant, posted_date, kind, pending, amount, provider_category, account_id, created_at, category");
     if (error) throw error;
-    await triggerMerchantWatches(db, item.user_id, written ?? []);
+    // The first walk of an account (no `since`) is history, not news.
+    const routine = body.prune?.since != null;
+    await triggerMerchantWatches(db, item.user_id, (written ?? []) as WrittenRow[], routine);
+    await notifyAfterSync(db, item.user_id, (written ?? []) as WrittenRow[], { firstSync: !routine });
   }
 
   let pruned = 0;

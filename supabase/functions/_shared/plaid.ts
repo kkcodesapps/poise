@@ -43,6 +43,8 @@ export interface PlaidTransaction {
   pending: boolean;
   pending_transaction_id?: string | null;
   personal_finance_category?: { primary: string; detailed: string } | null;
+  logo_url?: string | null;
+  counterparties?: { name?: string; logo_url?: string | null; type?: string }[] | null;
 }
 
 export interface SyncResponse {
