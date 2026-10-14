@@ -2,7 +2,8 @@ import Foundation
 
 /// A charge the user asked Poise to keep an eye on.
 public struct Watch: Identifiable, Hashable, Codable, Sendable {
-    public enum Kind: String, Codable, Sendable { case refund, merchant }
+    /// `price`: tell me when what I pay for this item moves — `matcher` is the `PriceItem` id.
+    public enum Kind: String, Codable, Sendable { case refund, merchant, price }
     public enum Status: String, Codable, Sendable { case waiting, overdue, arrived, watching, triggered, closed
         public var isOpen: Bool { self == .waiting || self == .overdue || self == .watching }
     }
@@ -48,6 +49,8 @@ public enum WatchEngine {
                 let hit = transactions.filter { ($0.kind == .spend || $0.kind == .untracked) && $0.merchantKey == w.matcher && $0.displayDate > w.createdAt && $0.id != w.transactionID }
                     .sorted { $0.displayDate < $1.displayDate }.first
                 if let hit { out.status = .triggered; out.resolvedAt = hit.displayDate; out.resolvedTransactionID = hit.id }
+            case .price:
+                break   // stays `watching`; the price tracker raises the insight when a purchase lands off the usual price
             }
             return out
         }

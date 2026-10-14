@@ -79,6 +79,26 @@ export async function notifyAfterSync(db: SupabaseClient, userID: string, writte
     await sendPush(db, userID, { kind: "heads", title: `Charged twice at ${pretty(r.merchant)}?`, body: `${money(r.amount)} twice today on the same card. Tap to look.`, data: { transaction: r.id, insight: `dup-${r.id}` }, collapseID: `dup-${r.id}` });
   }
 
+  // --- a tracked item bought at a different price. Only merchant items can be matched here: a name the user gives a
+  // charge isn't known until they give it, so those show up in the app the moment they do.
+  const { data: priceWatches } = await db.from("watches").select("id, matcher").eq("user_id", userID).eq("kind", "price").eq("status", "watching");
+  const tracked = new Set<string>((priceWatches ?? []).map((w: { matcher: string }) => w.matcher));
+  if (tracked.size) {
+    for (const r of spend) {
+      const key = `merchant|${merchantKey(r.merchant)}`;
+      if (!tracked.has(key)) continue;
+      const { data: earlier } = await db.from("transactions").select("amount, merchant").eq("user_id", userID).eq("kind", "spend").eq("pending", false)
+        .lt("posted_date", r.posted_date).is("deleted_at", null).order("posted_date", { ascending: false }).limit(60);
+      const prices = (earlier ?? []).filter((t: { merchant: string }) => merchantKey(t.merchant) === merchantKey(r.merchant)).slice(0, 12).map((t: { amount: number }) => Math.abs(t.amount)).sort((a, b) => a - b);
+      if (prices.length < 2) continue;
+      const usual = prices.length % 2 ? prices[(prices.length - 1) / 2] : (prices[prices.length / 2 - 1] + prices[prices.length / 2]) / 2;
+      const price = Math.abs(r.amount), diff = price - usual;
+      if (Math.abs(diff) < Math.max(0.5, usual * 0.03)) continue;
+      const pct = Math.round(Math.abs(diff) / usual * 100);
+      await sendPush(db, userID, { kind: "heads", title: `${pretty(r.merchant)} · ${money(price)}, usually ${money(usual)}`, body: `${diff > 0 ? "Up" : "Down"} ${money(diff)} — ${pct}% ${diff > 0 ? "more" : "less"} for the same thing. Tap for the history.`, data: { item: key }, collapseID: `price-${key}`.slice(0, 64) });
+    }
+  }
+
   // --- a refund you were waiting on
   const refunds = rows.filter((r) => r.kind === "refund" && r.amount > 0);
   if (refunds.length) {
