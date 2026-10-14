@@ -15,6 +15,7 @@ struct TransactionDetailView: View {
     // what was this
     @State private var name: String
     @State private var nameForAll = true
+    @State private var showItem = false
     @State private var noteText: String
     @State private var leftOut: Bool
     @State private var showMerchant = false
@@ -49,7 +50,7 @@ struct TransactionDetailView: View {
                     if sameMerchantCount > 0 {
                         Button { showMerchant = true } label: {
                             HStack(spacing: 4) {
-                                Text("All \(sameMerchantCount + 1) charges from \(transaction.displayMerchant)").font(Theme.Font.subheadStrong)
+                                Text("All \(sameMerchantCount + 1) charges from \(transaction.merchant.prettyMerchant)").font(Theme.Font.subheadStrong)
                                 Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
                             }
                             .foregroundStyle(Theme.Accent.default)
@@ -57,6 +58,7 @@ struct TransactionDetailView: View {
                         .buttonStyle(.plain).padding(.bottom, Theme.Spacing.s8)
                     }
                     if let why = model.insightContext, why.id.hasSuffix(transaction.id) { whyCard(why) }
+                    if let item = model.priceItem(for: transaction) { priceCard(item).padding(.top, Theme.Spacing.s8) }
                     SectionHeader(title: "What was this?")
                     whatSection
                     if transaction.kind == .spend || transaction.kind == .untracked {
@@ -114,6 +116,7 @@ struct TransactionDetailView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { commit() }.fontWeight(.semibold).tint(Theme.Accent.default) }
             }
             .sheet(isPresented: $showMerchant) { MerchantView(merchantKey: transaction.merchantKey) }
+            .sheet(isPresented: $showItem) { if let item = model.priceItem(for: transaction) { PriceItemView(itemID: item.id) } }
             .sheet(isPresented: $newCategory) { CategoryEditView(startWith: transaction.merchant) { created in categoryID = created.id; if kind != .spend && kind != .refund { kind = .spend } } }
             .onAppear {
                 if let w = existingRefundWatch { refundOn = true; expected = w.expectedAmount ?? transaction.magnitude; nudgeDays = w.nudgeDays; note = w.note ?? "" }
@@ -155,6 +158,13 @@ struct TransactionDetailView: View {
                         if !name.isEmpty { Button { name = "" } label: { Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.Text.tertiary) }.buttonStyle(.plain) }
                     }
                     .padding(.horizontal, 14).frame(height: 44).background(Theme.Bg.inset, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+                    let suggestions = model.itemNames(at: transaction.merchantKey).filter { $0 != name }
+                    if !suggestions.isEmpty {
+                        // Things already named at this merchant: one tap names this purchase the same way and it joins the run.
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) { ForEach(suggestions, id: \.self) { n in Chip(label: n, symbol: "tag", on: false) { name = n; nameForAll = false } } }
+                        }
+                    }
                     if !name.isEmpty, name != (transaction.displayName ?? ""), sameMerchant > 0 {
                         Toggle("Always call it this", isOn: $nameForAll).font(Theme.Font.body).foregroundStyle(Theme.Text.primary).tint(Theme.Accent.default)
                     }
@@ -167,6 +177,31 @@ struct TransactionDetailView: View {
                 }
             }
         }
+        .padding(.horizontal, Theme.Spacing.s16)
+    }
+
+    /// "Paid 7 times · usually $29.99": the run this charge belongs to, one tap from the price history.
+    private func priceCard(_ item: PriceItem) -> some View {
+        let moved = item.direction != .steady
+        let since = item.changedAt.map { " since \($0.formatted(.dateTime.month(.wide)))" } ?? ""
+        return Button { showItem = true } label: {
+            HStack(spacing: Theme.Spacing.s12) {
+                IconCircle(symbol: moved ? (item.direction == .up ? "arrow.up.right" : "arrow.down.right") : "tag", size: 40,
+                           fill: moved ? (item.direction == .up ? Theme.Status.trackBg : Theme.Status.goodBg) : Theme.Bg.subtle,
+                           color: moved ? item.tone : Theme.Text.primary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Paid \(item.count) time\(item.count == 1 ? "" : "s") · usually \(item.usual.money2)").font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1)
+                    Text(moved ? "\(item.direction == .up ? "Up" : "Down") \(abs(item.delta).money2)\(since) · \(item.lowest.money2) at the lowest" : "Same as usual · \(item.lowest.money2) at the lowest").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.Text.tertiary)
+            }
+            .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
+            .background(Theme.Bg.elevated, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous).strokeBorder(Theme.Border.subtle))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
         .padding(.horizontal, Theme.Spacing.s16)
     }
 

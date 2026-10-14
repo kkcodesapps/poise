@@ -18,6 +18,7 @@ struct WhereView: View {
                         lens(b)
                         strip(b)
                         if let sel = selectedSlice, let s = b.slices.first(where: { $0.id == sel }) { SliceCard(slice: s, accounts: model.accounts) { selectedSlice = nil } onSelect: { model.selectedTransaction = $0 }.padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12) }
+                        if !model.priceItems.isEmpty { pricesEntry.padding(.top, Theme.Spacing.s12) }
                         rows(b)
                     } else {
                         EmptyStateView(symbol: "chart.bar.doc.horizontal", title: "Where shows up here", body: "Link a bank and Poise will break spending down by category — by week, month or year.")
@@ -98,6 +99,29 @@ struct WhereView: View {
             Text(label).font(Theme.Font.caption).foregroundStyle(Theme.Text.secondary)
             Text(value.percent).font(Theme.Font.moneyXS).foregroundStyle(Theme.Text.primary)
         }
+    }
+
+    /// The door to Prices: how many of the things you buy again cost more this month, and how many are tracked.
+    private var pricesEntry: some View {
+        let up = model.pricesMovedLately.filter { $0.direction == .up }.count, tracked = model.priceItems.filter(\.tracked).count
+        let line = (up > 0 ? "\(up) cost\(up == 1 ? "s" : "") more this month" : "\(model.priceItems.count) thing\(model.priceItems.count == 1 ? "" : "s") you buy again") + (tracked > 0 ? " · \(tracked) tracked" : "")
+        return Button { model.showPrices = true } label: {
+            HStack(spacing: Theme.Spacing.s12) {
+                IconCircle(symbol: "chart.line.uptrend.xyaxis", size: 40, fill: Theme.Accent.subtle, color: Theme.Accent.default)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Prices").font(Theme.Font.headline).foregroundStyle(Theme.Text.primary)
+                    Text(line).font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.Text.tertiary)
+            }
+            .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
+            .background(Theme.Bg.elevated, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous).strokeBorder(Theme.Border.subtle))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, Theme.Spacing.s16)
     }
 
     private func strip(_ b: Breakdown) -> some View {

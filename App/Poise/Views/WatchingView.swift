@@ -75,12 +75,13 @@ struct WatchRowView: View {
         case (.refund, _): return "Waiting for a refund · \((watch.expectedAmount ?? 0).money2) · since \(d(since))"
         case (.merchant, .triggered): return "Charged again \(d(watch.resolvedAt ?? .now))"
         case (.merchant, _): return "Tell me if they charge again · since \(d(watch.createdAt))"
+        case (.price, _): return "Tell me when the price moves · since \(d(watch.createdAt))"
         }
     }
     private var right: String {
         switch watch.status {
         case .triggered: return model.transactions.first { $0.id == watch.resolvedTransactionID }?.magnitude.money2 ?? ""
-        case .watching: return "no charges"
+        case .watching: return watch.kind == .price ? (model.priceItem(id: watch.matcher).map { "usually \($0.usual.money2)" } ?? "") : "no charges"
         case .closed: return ""
         default: return "\(days) day\(days == 1 ? "" : "s")"
         }
