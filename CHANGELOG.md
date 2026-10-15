@@ -2,6 +2,15 @@
 
 Every TestFlight build bumps the version; the section for it becomes the build's "What to Test" notes.
 
+## 0.3.0 — 2026-09-21
+
+- Prices has a home: the Where tab now switches between Spending and Prices, and the list holds everything you've bought twice or more — steady things with a usual price, varied things (groceries, gas, usage) with their range, and a subscription's plan as its own run.
+- Price alerts live under Prices → Tracked, not in Watching. Watching stays for refunds and suspicious charges.
+- A subscription can be re-filed from its page: Subscription, Bill, or Just purchases (out of Leaks).
+- Plans with pay-as-you-go on top (Cursor, Anthropic) show "Plus usage · $X this month" — counted as spending, never as the subscription.
+- "I cancelled this": pick the date, and the subscription drops out of the totals, Next 14 and the verdict into a Cancelled & ended section. If that merchant charges again, it goes to the top of Leaks and you get a push.
+- A subscription that goes quiet for two billing periods ends on its own; if it comes back, Leaks says so.
+
 ## 0.2.1 — 2026-09-20
 
 - A merchant's logo now shows on every one of its charges, including the ones from Apple Card, as long as any bank has supplied one.

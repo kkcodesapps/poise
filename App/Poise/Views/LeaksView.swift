@@ -11,7 +11,7 @@ struct LeaksView: View {
     private var renewals: [RecurringStream] {
         model.streams.filter { $0.cadence == .annual && (Calendar.current.dateComponents([.day], from: .now, to: $0.nextExpected).day ?? 99) <= 30 }
     }
-    private var leakInsights: [Insight] { model.insights.filter { [.duplicate, .fee, .priceMoved].contains($0.kind) } }
+    private var leakInsights: [Insight] { model.insights.filter { [.cancelledCharge, .streamReturned, .duplicate, .fee, .priceMoved].contains($0.kind) } }
 
     var body: some View {
         NavigationStack {
@@ -24,7 +24,7 @@ struct LeaksView: View {
                             tile("SUBSCRIPTIONS", value: monthly.money + "/mo")
                             tile("FEES THIS YEAR", value: model.fees.total.money)
                             let moved = priceUps.count + model.pricesMovedLately.filter { $0.direction == .up }.count
-                            Button { model.pricesFilter = "up"; model.showPrices = true } label: { tile("PRICE CHANGES", value: "\(moved)", color: moved == 0 ? Theme.Text.primary : Theme.Status.track) }.buttonStyle(.plain)
+                            Button { model.showPricesList(filter: "up") } label: { tile("PRICE CHANGES", value: "\(moved)", color: moved == 0 ? Theme.Text.primary : Theme.Status.track) }.buttonStyle(.plain)
                         }
                         .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s4)
                         if !leakInsights.isEmpty {
@@ -53,6 +53,18 @@ struct LeaksView: View {
                         if !bills.isEmpty {
                             SectionHeader(title: "Bills")
                             list(bills)
+                        }
+                        if !model.endedStreams.isEmpty {
+                            SectionHeader(title: "Cancelled & ended · \(model.endedStreams.count)")
+                            Card {
+                                ForEach(Array(model.endedStreams.enumerated()), id: \.element.id) { i, s in
+                                    Button { model.selectedStream = s } label: { EndedStreamRow(stream: s, cancelledOn: model.isCancelled(s)) }.buttonStyle(.plain)
+                                    if i < model.endedStreams.count - 1 { RowDivider() }
+                                }
+                            }
+                            .padding(.horizontal, Theme.Spacing.s16)
+                            Text("Cancelled ones you told Poise about; ended ones went quiet for two billing periods on their own. Both stop counting everywhere. If any of them charges again it goes to the top of this screen with a heads-up.")
+                                .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s8)
                         }
                         SectionHeader(title: "Fees this year")
                         Card {
@@ -104,5 +116,52 @@ struct LeaksView: View {
         case .quarterly: (s.amount / 3).roundedToCents
         case .annual: (s.amount / 12).roundedToCents
         }
+    }
+}
+
+
+/// A subscription that stopped — by your hand or on its own — muted, with what it used to cost.
+struct EndedStreamRow: View {
+    let stream: RecurringStream
+    let cancelledOn: Date?
+    var body: some View {
+        HStack(spacing: Theme.Spacing.s12) {
+            ZStack {
+                Circle().fill(Theme.Bg.subtle)
+                Text(String(stream.displayMerchant.prefix(1)).uppercased()).font(Theme.Font.headline).foregroundStyle(Theme.Text.tertiary)
+            }
+            .frame(width: 40, height: 40)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(stream.displayMerchant).font(Theme.Font.headline).foregroundStyle(Theme.Text.secondary).lineLimit(1)
+                Text(cancelledOn.map { "Cancelled \($0.formatted(.dateTime.month(.abbreviated).day())) · watching for a charge" }
+                     ?? "Ended · last charge \(stream.lastSeen.formatted(.dateTime.month(.abbreviated).day())) · \(stream.quietLabel)")
+                    .font(Theme.Font.footnote).foregroundStyle(Theme.Text.tertiary).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(stream.amount.moneyString(cents: true)).font(Theme.Font.moneyMD).foregroundStyle(Theme.Text.tertiary)
+                Text("WAS \(stream.cadence.perLabel)").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary)
+            }
+        }
+        .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
+    }
+}
+
+extension RecurringStream {
+    /// "two months quiet", "three weeks quiet".
+    var quietLabel: String {
+        let days = Calendar.current.dateComponents([.day], from: lastSeen, to: .now).day ?? 0
+        let months = days / 30, weeks = days / 7
+        let n = months >= 1 ? months : weeks
+        let unit = months >= 1 ? "month" : "week"
+        let words = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"]
+        return "\(n < words.count ? words[n] : "\(n)") \(unit)\(n == 1 ? "" : "s") quiet"
+    }
+}
+
+extension Cadence {
+    /// "/mo", "/wk", "/yr" — what the amount is per.
+    var perLabel: String {
+        switch self { case .weekly: "/wk"; case .biweekly: "/2wk"; case .semimonthly: "×2/mo"; case .monthly: "/mo"; case .quarterly: "/qtr"; case .annual: "/yr" }
     }
 }

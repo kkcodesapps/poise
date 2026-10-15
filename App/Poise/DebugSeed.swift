@@ -82,6 +82,25 @@ enum DebugSeed {
         return "{\"transactions\": [\(rows.joined(separator: ","))]}"
     }
 
+    /// `-seed-leaks`: a plan with usage (Cursor), a subscription that went quiet and came back (Headspace), one that ended
+    /// (Peloton) — the shapes Leaks round two has to show.
+    static var leaks: String {
+        let cal = Calendar.current, card = "DEB00000-0000-0000-0000-000000000001"
+        func row(_ id: String, _ amount: Double, _ merchant: String, mcc: Int, _ d: Date) -> String {
+            let day = WalletSource.Payload.day(d)
+            return "{\"id\": \"\(id)\", \"accountID\": \"\(card)\", \"amount\": \(amount), \"currency\": \"USD\", \"debit\": true, \"description\": \"\(merchant.uppercased())\", \"merchant\": \"\(merchant)\", \"mcc\": \(mcc), \"type\": \"pointOfSale\", \"status\": \"booked\", \"date\": \"\(day)\", \"postedDate\": \"\(day)\"}"
+        }
+        let today = cal.startOfDay(for: .now)
+        let back = { (d: Int) in cal.date(byAdding: .day, value: -d, to: today)! }
+        var rows: [String] = []
+        for i in 0..<4 { rows.append(row("seed-cursor-plan-\(i)", 200, "Cursor", mcc: 4899, back(2 + 30 * i))) }
+        for (i, (amt, d)) in [(63.20, 34), (80.15, 30), (100.05, 7), (100.27, 5)].enumerated() { rows.append(row("seed-cursor-use-\(i)", amt, "Cursor", mcc: 4899, back(d))) }
+        for i in 0..<4 { rows.append(row("seed-head-\(i)", 12.99, "Headspace", mcc: 4899, back(100 + 30 * i))) }
+        rows.append(row("seed-head-back", 12.99, "Headspace", mcc: 4899, back(3)))
+        for i in 0..<3 { rows.append(row("seed-pelo-\(i)", 44, "Peloton", mcc: 7997, back(75 + 30 * i))) }
+        return "{\"transactions\": [\(rows.joined(separator: ","))]}"
+    }
+
     static let more = """
     {"transactions": [
       {"id": "seed-more-\(Int(Date.now.timeIntervalSince1970))", "accountID": "DEB00000-0000-0000-0000-000000000001", "amount": 48.10, "currency": "USD", "debit": true, "description": "Shell", "merchant": "Shell", "mcc": 5541, "type": "pointOfSale", "status": "booked", "date": "\(WalletSource.Payload.day(.now))", "postedDate": "\(WalletSource.Payload.day(.now))"}]}

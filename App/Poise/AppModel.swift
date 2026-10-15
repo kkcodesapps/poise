@@ -75,11 +75,16 @@ final class AppModel {
     var showPushAsk: Bool { looksLinked && !askedForPush && pushStatus == .notDetermined && launch == .ready }
     struct MerchantRef: Identifiable, Sendable { let key: String; var id: String { key } }
     var selectedMerchant: MerchantRef?
-    /// Prices: what you pay for the things you buy again (PriceTracker), the list sheet, and the item open on top of it.
+    /// Prices: what you pay for the things you buy again (PriceTracker). They live on the Where tab's second mode.
     var priceItems: [PriceItem] = []
-    var showPrices = false
-    /// Which chip the Prices sheet opens on — "up" from the Leaks tile.
+    enum WhereMode: String, CaseIterable { case spending = "Spending", prices = "Prices" }
+    var whereMode: WhereMode = .spending
+    /// Which chip the Prices list opens on — "up" from the Leaks tile.
     var pricesFilter = "all"
+    /// Every stream the detector found, ended ones included; `streams` is the live subset the engines use.
+    var allStreams: [RecurringStream] = []
+    /// Subscriptions and bills that stopped: marked cancelled by the user, or quiet for two periods on their own.
+    var endedStreams: [RecurringStream] = []
     struct PriceItemRef: Identifiable, Sendable { let id: String }
     var selectedPriceItem: PriceItemRef?
     /// What changed since the app was last in front. Nil when there's nothing to say.
@@ -140,7 +145,8 @@ final class AppModel {
     var walletAvailable: Bool { WalletSource.isAvailable }
     var topInsight: Insight? { insights.first }
     var isReviewDay: Bool { Calendar.current.component(.weekday, from: .now) == 1 }
-    var openWatches: [Watch] { watches.filter { $0.status.isOpen } }
+    /// Refund and merchant watches — the priority list. Price watches live under Prices, not Watching.
+    var openWatches: [Watch] { watches.filter { $0.status.isOpen && $0.kind != .price } }
     var owedBack: Decimal { openWatches.filter { $0.kind == .refund }.reduce(0) { $0 + ($1.expectedAmount ?? 0) } }
     func watch(for transactionID: String) -> Watch? { watches.first { $0.transactionID == transactionID && $0.status.isOpen } }
     func isWatched(merchantKey: String) -> Bool { watches.contains { $0.kind == .merchant && $0.matcher == merchantKey && $0.status.isOpen } }
@@ -215,6 +221,8 @@ final class AppModel {
                 if let ins = insights.first(where: { $0.kind == kind }) { Task { try? await Task.sleep(for: .seconds(1)); open(ins) } }   // after the splash fade
             }
             if args.contains("-open-stream"), let s = streams.first(where: { $0.kind == .subscription }) { selectedStream = s }
+            // `-open-ended` opens the first cancelled/ended subscription (the muted sheet states).
+            if args.contains("-open-ended"), let s = endedStreams.first { Task { try? await Task.sleep(for: .seconds(1)); selectedStream = s } }
             // `-open-merchant` opens the merchant page for the first spend charge; `-since` the since-you-last-looked sheet.
             if args.contains("-open-merchant"), let t = transactions.first(where: { $0.kind == .spend }) { Task { try? await Task.sleep(for: .seconds(1)); selectedMerchant = .init(key: t.merchantKey) } }
             if args.contains("-since") { Task { try? await Task.sleep(for: .seconds(1)); showSince = true } }
@@ -225,7 +233,7 @@ final class AppModel {
                 await reload()
                 for t in raw where t.id.hasPrefix("seed-price-") || t.merchant == "Amazon" && t.magnitude < 40 { await rename(t, to: "Naked Whey Protein", always: false) }
             }
-            if args.contains("-prices") { Task { try? await Task.sleep(for: .seconds(1)); showPrices = true } }
+            if args.contains("-prices") { showPricesList() }
             // `-open-txn-item` opens the latest purchase of the first item (the sheet's price card + name suggestions).
             if args.contains("-open-txn-item"), let item = pricesMovedLately.first ?? priceItems.first, let t = transactions.first(where: { $0.id == item.purchases.last?.id }) { Task { try? await Task.sleep(for: .seconds(1)); selectedTransaction = t } }
             if args.contains("-open-item"), let item = pricesMovedLately.first ?? priceItems.first { Task { try? await Task.sleep(for: .seconds(1)); selectedPriceItem = .init(id: item.id) } }
@@ -253,6 +261,12 @@ final class AppModel {
                 try await Backend.client.functions.invoke("financekit-sync", options: FunctionInvokeOptions(headers: ["content-type": "application/json"], body: DebugSeed.bills))
                 await reload()
             }
+            if args.contains("-seed-leaks") {
+                try await Backend.client.functions.invoke("financekit-sync", options: FunctionInvokeOptions(headers: ["content-type": "application/json"], body: DebugSeed.leaks))
+                await reload()
+            }
+            // `-cancel-first` marks the first live subscription cancelled 60 days ago, so its later charges become the top leak.
+            if args.contains("-cancel-first"), let s = streams.first(where: { $0.kind == .subscription }) { await cancel(s, on: Calendar.current.date(byAdding: .day, value: -60, to: .now)!) }
             if args.contains("-seed-payroll") {
                 try await Backend.client.functions.invoke("financekit-sync", options: FunctionInvokeOptions(headers: ["content-type": "application/json"], body: DebugSeed.payroll))
                 await reload()
@@ -438,7 +452,7 @@ final class AppModel {
     }
 
     private func resetState() {
-        accounts = []; hiddenAccounts = []; raw = []; transactions = []; streams = []; verdict = nil; pace = nil; cashflow = []; insights = []; reviewCards = []; priceItems = []
+        accounts = []; hiddenAccounts = []; raw = []; transactions = []; streams = []; allStreams = []; endedStreams = []; verdict = nil; pace = nil; cashflow = []; insights = []; reviewCards = []; priceItems = []
         lastSync = nil; institutions = []; relinkNeeded = []; walletLinked = false; walletAccessLost = false; settings = Repository.Settings(); isAnonymous = true; accountName = nil
         customCategories = []; watches = []; categories = .builtIn
         rememberedLinked = false; UserDefaults.standard.removeObject(forKey: "hasLinkedBefore"); UserDefaults.standard.removeObject(forKey: "onboardingDone")
@@ -622,7 +636,11 @@ final class AppModel {
         case .priceUp, .renewal, .newStream:
             if let s = streams.first(where: { insight.id.hasPrefix("price-\($0.id)") || insight.id.hasPrefix("renewal-\($0.id)") || insight.id.hasPrefix("new-\($0.id)") }) { selectedStream = s } else { tab = .leaks }
         case .priceMoved:
-            if let item = priceItems.first(where: { insight.id.hasPrefix("price-item-\($0.id)-") }) { selectedPriceItem = .init(id: item.id) } else { showPrices = true }
+            if let item = priceItems.first(where: { insight.id.hasPrefix("price-item-\($0.id)-") }) { selectedPriceItem = .init(id: item.id) } else { showPricesList() }
+        case .cancelledCharge:
+            if let s = allStreams.first(where: { insight.id.hasPrefix("cancelled-\($0.id)-") }) { selectedStream = s } else { tab = .leaks }
+        case .streamReturned:
+            if let s = streams.first(where: { insight.id.hasPrefix("returned-\($0.id)-") }) { selectedStream = s } else { tab = .leaks }
         case .watchTriggered, .refundOverdue, .refundArrived: tab = .home; showWatching = true
         case .crunch, .statement: tab = .next14
         case .paceOverrun, .positive: tab = .pace
@@ -641,6 +659,55 @@ final class AppModel {
         let since = Calendar.current.date(byAdding: .year, value: -1, to: .now) ?? .distantPast
         let ids = Set(s.transactionIDs)
         return transactions.filter { (ids.isEmpty ? "\($0.kind.rawValue)|\($0.merchantKey)" == s.id : ids.contains($0.id)) && $0.displayDate >= since }.sorted { $0.displayDate > $1.displayDate }
+    }
+
+    /// "I cancelled this": the stream stops counting from that date; a later charge from the merchant is the top leak.
+    func cancel(_ s: RecurringStream, on date: Date) async {
+        var draft = settings; draft.cancelledStreams[s.id] = Calendar.current.startOfDay(for: date)
+        await save(draft)
+    }
+
+    func uncancel(_ s: RecurringStream) async {
+        var draft = settings; draft.cancelledStreams[s.id] = nil
+        await save(draft)
+    }
+
+    func isCancelled(_ s: RecurringStream) -> Date? { settings.cancelledStreams[s.id] }
+
+    /// "This is a…": subscription or bill by hand, or "just purchases" (dismissed — out of Leaks and Next 14).
+    func setStreamKind(_ s: RecurringStream, _ kind: StreamKind?) async {
+        var draft = settings
+        if let kind {
+            draft.streamKinds[s.id] = kind.rawValue
+            draft.dismissedStreams.removeAll { $0 == s.id }
+        } else {
+            draft.streamKinds[s.id] = nil
+            if !draft.dismissedStreams.contains(s.id) { draft.dismissedStreams.append(s.id) }
+        }
+        await save(draft)
+    }
+
+    /// A stream bills like a plan when it isn't a burrito that happens to land monthly: anything but the everyday
+    /// built-in categories (dining, fun, shopping, groceries, transport, health).
+    func isPlanLike(_ s: RecurringStream) -> Bool {
+        guard s.kind != .income else { return false }
+        let everyday: Set<String> = ["dining", "fun", "shopping", "groceries", "transport", "health"]
+        let categoryID = s.transactionIDs.last.flatMap { id in transactions.first { $0.id == id } }?.categoryID
+        let c = categories.resolve(categoryID)
+        return !(c.builtIn && everyday.contains(c.id))
+    }
+
+    struct Usage: Sendable { var thisMonth: Decimal; var count: Int; var lastMonth: Decimal }
+    /// A plan's pay-as-you-go: the merchant's other charges this month (and last), outside the stream's own rows.
+    func usage(for s: RecurringStream) -> Usage? {
+        guard isPlanLike(s) else { return nil }
+        let key = PoiseKit.Transaction.merchantKey(s.merchant), own = Set(s.transactionIDs)
+        let cal = Calendar.current
+        guard let month = cal.dateInterval(of: .month, for: .now), let prev = cal.date(byAdding: .month, value: -1, to: month.start).flatMap({ cal.dateInterval(of: .month, for: $0) }) else { return nil }
+        let extra = transactions.filter { ($0.kind == .spend || $0.kind == .untracked) && $0.amount < 0 && !$0.excluded && $0.merchantKey == key && !own.contains($0.id) }
+        let now = extra.filter { month.holds($0.displayDate) }, last = extra.filter { prev.holds($0.displayDate) }
+        guard !now.isEmpty || !last.isEmpty else { return nil }
+        return Usage(thisMonth: now.reduce(0) { $0 + $1.magnitude }, count: now.count, lastMonth: last.reduce(0) { $0 + $1.magnitude })
     }
 
     /// "Heads-up before it renews" = a merchant watch on the stream; the next charge becomes a heads-up.
@@ -748,6 +815,9 @@ final class AppModel {
 
     func priceItem(id: String) -> PriceItem? { priceItems.first { $0.id == id } }
 
+    /// Prices live on the Where tab: switch to it, on the chip asked for.
+    func showPricesList(filter: String = "all") { pricesFilter = filter; whereMode = .prices; tab = .whereTab }
+
     /// The item a charge belongs to: its name's item when it has one, else its merchant's.
     func priceItem(for t: PoiseKit.Transaction) -> PriceItem? {
         priceItems.first { item in item.purchases.contains { $0.id == t.id } }
@@ -760,7 +830,7 @@ final class AppModel {
 
     /// The Prices list: what moved lately first, then everything else by how often it's bought.
     var pricesMovedLately: [PriceItem] { priceItems.filter { $0.movedLately(now: .now) }.sorted { abs($0.deltaPercent) > abs($1.deltaPercent) } }
-    var pricesRest: [PriceItem] { priceItems.filter { !$0.movedLately(now: .now) }.sorted { ($0.count, $0.lastSeen) > ($1.count, $1.lastSeen) } }
+    var pricesRest: [PriceItem] { priceItems.filter { !$0.movedLately(now: .now) }.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending } }
 
     /// Renames an item: a named run takes the new name on every purchase; a merchant item becomes the merchant's rule.
     func renameItem(_ item: PriceItem, to name: String) async {
@@ -817,7 +887,7 @@ final class AppModel {
         if let id = hints["insight"], let ins = insights.first(where: { $0.id == id }) { open(ins); return }
         if let id = hints["transaction"], let t = transactions.first(where: { $0.id == id }) { selectedTransaction = t; return }
         if let id = hints["stream"], let s = streams.first(where: { $0.id == id }) { selectedStream = s; return }
-        if let id = hints["item"] { if priceItem(id: id) != nil { selectedPriceItem = .init(id: id) } else { showPrices = true }; return }
+        if let id = hints["item"] { if priceItem(id: id) != nil { selectedPriceItem = .init(id: id) } else { showPricesList() }; return }
         if hints["review"] != nil { showReview = true; return }
         if let tab = hints["tab"], let t = Tab.allCases.first(where: { $0.rawValue.lowercased().replacingOccurrences(of: " ", with: "") == tab }) { self.tab = t }
     }
@@ -951,7 +1021,7 @@ final class AppModel {
 
     func recompute() {
         fillLogos()
-        guard hasLinkedBank else { verdict = nil; pace = nil; cashflow = []; insights = []; reviewCards = []; transactions = []; streams = []; priceItems = []; publishWidgetSnapshot(); return }
+        guard hasLinkedBank else { verdict = nil; pace = nil; cashflow = []; insights = []; reviewCards = []; transactions = []; streams = []; allStreams = []; endedStreams = []; priceItems = []; publishWidgetSnapshot(); return }
         let now = Date.now
         var all = TransferDetector.pair(raw, accounts: accounts)
         all = RefundMatcher.match(all)
@@ -962,7 +1032,15 @@ final class AppModel {
             accounts[i].statementIsEstimate = accounts[i].statementAmount != nil
         }
         let rows = all.filter { !$0.excluded }                       // "leave it out": in the feed, out of every number
-        streams = RecurringDetector.detect(rows, now: now, categories: categories).filter { !settings.dismissedStreams.contains($0.id) }
+        allStreams = RecurringDetector.detect(rows, now: now, categories: categories).map { s in
+            var s = s
+            if let k = settings.streamKinds[s.id].flatMap(StreamKind.init(rawValue:)), s.kind != .income { s.kind = k }   // re-filed by hand
+            return s
+        }
+        let dismissed = Set(settings.dismissedStreams)
+        streams = allStreams.filter { !dismissed.contains($0.id) && !$0.isEnded && settings.cancelledStreams[$0.id] == nil }
+        endedStreams = allStreams.filter { !dismissed.contains($0.id) && $0.kind != .income && ($0.isEnded || settings.cancelledStreams[$0.id] != nil) }
+            .sorted { (settings.cancelledStreams[$0.id] ?? $0.endedAt ?? .distantPast) > (settings.cancelledStreams[$1.id] ?? $1.endedAt ?? .distantPast) }
         let before = watches
         watches = WatchEngine.evaluate(watches, transactions: all, now: now)
         persistWatchChanges(from: before)
@@ -974,14 +1052,15 @@ final class AppModel {
         cashflow = CashflowEngine.nextDays(accounts: accounts, streams: streams, transactions: rows, now: now, paysCardsInFull: settings.paysCardsInFull)
         let ranked = InsightEngine.rank(.init(verdict: v, pace: p, streams: streams, transactions: rows, now: now, acknowledged: acknowledged, dupMuted: Set(settings.dupMuted)))
         let tracked = Set(watches.filter { $0.kind == .price && $0.status.isOpen }.map(\.matcher))
-        priceItems = PriceTracker.items(in: all, now: now).map { var i = $0; i.tracked = tracked.contains(i.id); return i }
-        let watchInsights = (WatchEngine.insights(watches, transactions: rows, now: now) + statementInsights(now: now) + PriceTracker.insights(priceItems, now: now)).filter { !acknowledged.contains($0.id) }
+        priceItems = PriceTracker.items(in: all, streams: allStreams.filter { !dismissed.contains($0.id) && isPlanLike($0) }, now: now).map { var i = $0; i.tracked = tracked.contains(i.id); return i }
+        let leakInsights = Cancellations.chargedAfterCancel(streams: allStreams, cancelled: settings.cancelledStreams, transactions: rows) + Cancellations.returned(streams: streams, now: now)
+        let watchInsights = (leakInsights + WatchEngine.insights(watches, transactions: rows, now: now) + statementInsights(now: now) + PriceTracker.insights(priceItems, now: now)).filter { !acknowledged.contains($0.id) }
         insights = (ranked + watchInsights).sorted { $0.rank < $1.rank }
         fees = Anomalies.feesYearToDate(rows, now: now)
         reviewCards = WeeklyReview.cards(transactions: rows, streams: streams, insights: insights, cashflow: cashflow, verdict: v, now: now, categories: categories)
         if pushStatus == .authorized || pushStatus == .provisional { Task { await scheduleLocal() } }
         // Anomalies count toward the status rule, so the verdict is finalized after ranking.
-        let anomalies = insights.filter { [.duplicate, .fee, .priceUp, .watchTriggered, .refundOverdue, .priceMoved].contains($0.kind) }.count
+        let anomalies = insights.filter { [.duplicate, .fee, .priceUp, .watchTriggered, .refundOverdue, .priceMoved, .cancelledCharge].contains($0.kind) }.count
         verdict = Verdict(status: VerdictEngine.status(ahead: v.ahead, kept: v.kept, target: input.keptTarget, anomalies: anomalies), ahead: v.ahead, kept: v.kept)
         publishWidgetSnapshot()
         pace = p

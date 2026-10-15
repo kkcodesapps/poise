@@ -250,6 +250,8 @@ struct Repository {
         var categoryLens: [String: String] = [:]     // built-in id → lens override
         var dismissedStreams: [String] = []          // "Not a subscription" — stream ids the detector should keep quiet about
         var dupMuted: [String] = []                  // merchant keys never to ask "charged twice?" about
+        var cancelledStreams: [String: Date] = [:]   // "I cancelled this" — stream id → the date; a later charge is the top leak
+        var streamKinds: [String: String] = [:]      // re-filed by hand — stream id → "subscription" | "bill"
     }
 
     private struct SettingsRow: Codable {
@@ -263,6 +265,8 @@ struct Repository {
         var category_lens: [String: String]?
         var dismissed_streams: [String]?
         var dup_muted: [String]?
+        var cancelled_streams: [String: String]?
+        var stream_kinds: [String: String]?
     }
 
     func loadSettings() async throws -> Settings {
@@ -271,14 +275,16 @@ struct Repository {
         return Settings(paydayOverride: r.payday_override.flatMap(Self.day.date(from:)), paysCardsInFull: r.pays_cc_in_full, keptTarget: r.kept_target,
                         committedSavings: Self.decimal(r.committed_savings), notifySpend: r.notif_prefs["spend"] ?? true,
                         notifyHeadsUp: r.notif_prefs["heads_up"] ?? true, notifyWeekly: r.notif_prefs["weekly_review"] ?? true, faceID: r.faceid, categoryLens: r.category_lens ?? [:],
-                        dismissedStreams: r.dismissed_streams ?? [], dupMuted: r.dup_muted ?? [])
+                        dismissedStreams: r.dismissed_streams ?? [], dupMuted: r.dup_muted ?? [],
+                        cancelledStreams: (r.cancelled_streams ?? [:]).compactMapValues { Self.day.date(from: $0) }, streamKinds: r.stream_kinds ?? [:])
     }
 
     func save(_ s: Settings) async throws {
         let session = try await client.auth.session
         let row = SettingsRow(user_id: session.user.id.uuidString, payday_override: s.paydayOverride.map(Self.day.string(from:)), pays_cc_in_full: s.paysCardsInFull,
                               kept_target: s.keptTarget, committed_savings: Double(truncating: s.committedSavings as NSDecimalNumber),
-                              notif_prefs: ["spend": s.notifySpend, "heads_up": s.notifyHeadsUp, "weekly_review": s.notifyWeekly], faceid: s.faceID, category_lens: s.categoryLens, dismissed_streams: s.dismissedStreams, dup_muted: s.dupMuted)
+                              notif_prefs: ["spend": s.notifySpend, "heads_up": s.notifyHeadsUp, "weekly_review": s.notifyWeekly], faceid: s.faceID, category_lens: s.categoryLens, dismissed_streams: s.dismissedStreams, dup_muted: s.dupMuted,
+                              cancelled_streams: s.cancelledStreams.mapValues { Self.day.string(from: $0) }, stream_kinds: s.streamKinds)
         try await client.from("settings").upsert(row, onConflict: "user_id").execute()
     }
 

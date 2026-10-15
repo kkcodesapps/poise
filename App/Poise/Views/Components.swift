@@ -108,6 +108,8 @@ extension Insight.Kind {
         case .refundArrived: "checkmark"
         case .statement: "creditcard"
         case .priceMoved: "tag"
+        case .cancelledCharge: "exclamationmark.triangle"
+        case .streamReturned: "arrow.clockwise"
         }
     }
 }
@@ -131,8 +133,10 @@ struct InsightRowView: View {
 }
 
 struct StreamRowView: View {
+    @Environment(AppModel.self) private var model
     let stream: RecurringStream
     var body: some View {
+        let usage = stream.kind == .income ? nil : model.usage(for: stream)
         HStack(spacing: Theme.Spacing.s12) {
             ZStack {
                 Circle().fill(Theme.Bg.subtle)
@@ -141,7 +145,7 @@ struct StreamRowView: View {
             .frame(width: 40, height: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(stream.displayMerchant).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1)
-                Text("\(stream.cadence.label.capitalized) · next \(stream.nextExpected.formatted(.dateTime.month(.abbreviated).day()))")
+                Text("\(stream.cadence.label.capitalized) · next \(stream.nextExpected.formatted(.dateTime.month(.abbreviated).day()))" + (usage.map { $0.thisMonth > 0 ? " · + \($0.thisMonth.money) usage this month" : "" } ?? ""))
                     .font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
             }
             Spacer(minLength: 8)
