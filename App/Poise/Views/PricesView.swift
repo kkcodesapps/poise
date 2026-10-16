@@ -1,63 +1,69 @@
 import SwiftUI
 import PoiseKit
 
-/// What you pay for the things you buy again: what moved lately, then everything else. A row opens the item.
-struct PricesView: View {
+/// What you pay for the things you buy again — the Where tab's second mode. Tracked first, then what moved lately,
+/// then everything A–Z. A row opens the item.
+struct PricesList: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
     @State private var filter = "all"
+    @State private var query = ""
     @State private var selected: AppModel.PriceItemRef?
 
-    private var moved: [PriceItem] { model.pricesMovedLately.filter(passes) }
-    private var rest: [PriceItem] { model.pricesRest.filter(passes) }
+    private var tracked: [PriceItem] { model.priceItems.filter { $0.tracked && passes($0) }.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending } }
+    private var moved: [PriceItem] { model.pricesMovedLately.filter { !$0.tracked && passes($0) } }
+    private var rest: [PriceItem] { model.pricesRest.filter { !$0.tracked && passes($0) } }
     private func passes(_ i: PriceItem) -> Bool {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        if !q.isEmpty, !i.displayName.localizedCaseInsensitiveContains(q), !i.merchant.prettyMerchant.localizedCaseInsensitiveContains(q) { return false }
         switch filter {
-        case "tracked": i.tracked
-        case "up": i.direction == .up
-        case "down": i.direction == .down
-        default: true
+        case "tracked": return i.tracked
+        case "up": return i.direction == .up
+        case "down": return i.direction == .down
+        case "plans": return i.source == .plan
+        default: return true
         }
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 0) {
-                    Text("What you pay for the things you buy again — a merchant’s repeat charges on their own, and anything you’ve named. No price-tracking app needed.")
-                        .font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach([("all", "All"), ("tracked", "Tracked"), ("up", "Up"), ("down", "Down")], id: \.0) { key, label in
-                                Chip(label: label, symbol: key == "up" ? "arrow.up.right" : key == "down" ? "arrow.down.right" : key == "tracked" ? "eye" : "line.3.horizontal.decrease", on: filter == key) { withAnimation(.snappy) { filter = key } }
-                            }
-                        }
-                        .padding(.horizontal, Theme.Spacing.s16)
-                    }
-                    .padding(.top, Theme.Spacing.s12)
-                    if moved.isEmpty, rest.isEmpty {
-                        Card { EmptyStateView(symbol: "chart.line.uptrend.xyaxis", title: filter == "all" ? "Nothing to compare yet" : "Nothing here", body: filter == "all" ? "Poise needs a few purchases of the same thing. Name a charge to start tracking one item from a store that sells everything." : "Change the filter to see the rest.") }
-                            .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s16)
-                    }
-                    if !moved.isEmpty {
-                        SectionHeader(title: "Moved lately")
-                        list(moved)
-                    }
-                    if !rest.isEmpty {
-                        SectionHeader(title: moved.isEmpty ? "Things you buy again" : "Everything you buy again")
-                        list(rest)
-                    }
-                    Text("Name a charge (“Call it”) and every purchase with that name becomes an item here — the way to follow one thing from a store that sells everything.")
-                        .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
-                }
-                .padding(.bottom, Theme.Spacing.s32)
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.Text.tertiary)
+                TextField("Anything you buy again", text: $query).font(Theme.Font.body).foregroundStyle(Theme.Text.primary).autocorrectionDisabled()
+                if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.Text.tertiary) }.buttonStyle(.plain) }
             }
-            .background(Theme.Bg.base)
-            .navigationTitle("Prices")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.tint(Theme.Accent.default) } }
-            .sheet(item: $selected) { ref in PriceItemView(itemID: ref.id) }
-            .onAppear { filter = model.pricesFilter; model.pricesFilter = "all" }
+            .padding(.horizontal, 12).frame(height: 40).background(Theme.Bg.inset, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+            .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach([("all", "All · \(model.priceItems.count)"), ("tracked", "Tracked · \(model.priceItems.filter(\.tracked).count)"), ("up", "Up"), ("down", "Down"), ("plans", "Plans")], id: \.0) { key, label in
+                        Chip(label: label, symbol: key == "up" ? "arrow.up.right" : key == "down" ? "arrow.down.right" : key == "tracked" ? "eye" : key == "plans" ? "arrow.clockwise" : "line.3.horizontal.decrease", on: filter == key) { withAnimation(.snappy) { filter = key } }
+                    }
+                }
+                .padding(.horizontal, Theme.Spacing.s16)
+            }
+            .padding(.top, Theme.Spacing.s12)
+            if tracked.isEmpty, moved.isEmpty, rest.isEmpty {
+                Card { EmptyStateView(symbol: "chart.line.uptrend.xyaxis", title: filter == "all" && query.isEmpty ? "Nothing to compare yet" : "Nothing here", body: filter == "all" && query.isEmpty ? "Poise needs two purchases of the same thing. Name a charge to follow one item from a store that sells everything." : "Try another filter or search.") }
+                    .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s16)
+            }
+            if !tracked.isEmpty {
+                SectionHeader(title: "Tracked · \(tracked.count)")
+                list(tracked)
+            }
+            if !moved.isEmpty {
+                SectionHeader(title: "Moved lately")
+                list(moved)
+            }
+            if !rest.isEmpty {
+                SectionHeader(title: "Everything · \(rest.count)")
+                list(rest)
+            }
+            Text("Everything you’ve bought twice or more. Things that cost about the same get a usual price and a heads-up when it moves; things that vary — groceries, gas, usage — show their range. Name a charge to follow one thing from a store that sells everything.")
+                .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
         }
+        .sheet(item: $selected) { ref in PriceItemView(itemID: ref.id) }
+        .onAppear { if model.pricesFilter != "all" { filter = model.pricesFilter; model.pricesFilter = "all" } }
+        .onChange(of: model.pricesFilter) { _, f in if f != "all" { filter = f; model.pricesFilter = "all" } }
     }
 
     private func list(_ items: [PriceItem]) -> some View {
@@ -81,7 +87,7 @@ struct PriceItemRow: View {
             MerchantCircle(logoURL: item.logoURL, symbol: model.categories.symbol(item.categoryID), size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.displayName).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1)
-                Text("\(item.source == .named ? item.merchant.prettyMerchant + " · " : "")\(item.count)× · usually \(item.usual.money2)").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
+                Text(item.subtitle).font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
             Sparkline(values: item.purchases.suffix(8).map { NSDecimalNumber(decimal: $0.price).doubleValue }, color: item.tone).frame(width: 28, height: 12)
@@ -95,15 +101,22 @@ struct PriceItemRow: View {
 }
 
 extension PriceItem {
-    var displayName: String { source == .named ? name : name.prettyMerchant }
+    var displayName: String { (source == .named ? name : name.prettyMerchant) + (planSuffix.map { " · \($0)" } ?? "") }
     var tone: Color { direction == .up ? Theme.Status.track : direction == .down ? Theme.Status.good : Theme.Text.tertiary }
-    /// "▲ $5.00 · 17%", "▼ $6.30 · 12%", or "steady".
+    /// "▲ $5.00 · 17%", "▼ $6.30 · 12%", "steady", or "varies" for a run with no usual price.
     var deltaLabel: String {
         switch direction {
-        case .steady: return "steady"
+        case .steady: return steady ? "steady" : "varies"
         case .up: return "▲ \(delta.money2) · \(Int((deltaPercent * 100).rounded()))%"
         case .down: return "▼ \((-delta).money2) · \(Int((-deltaPercent * 100).rounded()))%"
         }
+    }
+    /// "Amazon · 7× · usually $29.99", "Monthly · usually $200.00", "14× · $92 – $392 per visit", "9× · $63 – $100 · pay-as-you-go".
+    var subtitle: String {
+        let lead = source == .named ? "\(merchant.prettyMerchant) · " : ""
+        if source == .plan { return "\(lead)Plan · usually \(usual.money2)" }
+        if steady { return "\(lead)\(count)× · usually \(usual.money2)" }
+        return "\(lead)\(count)× · \(lowest.money) – \(highest.money)\(planSuffix == "usage" ? " · pay-as-you-go" : " per visit")"
     }
 }
 
@@ -154,8 +167,8 @@ struct PriceItemView: View {
                         .frame(maxWidth: .infinity).padding(.top, Theme.Spacing.s12).padding(.bottom, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
                         HStack(spacing: 8) {
                             tile("LAST", item.last.money2)
-                            tile("USUALLY", item.usual.money2)
-                            tile("LOWEST", item.lowest.money2)
+                            tile(item.steady ? "USUALLY" : "RANGE", item.steady ? item.usual.money2 : "\(item.lowest.money) – \(item.highest.money)")
+                            tile(item.steady ? "LOWEST" : "AVERAGE", item.steady ? item.lowest.money2 : item.average.money2)
                         }
                         .padding(.horizontal, Theme.Spacing.s16)
                         PriceChart(item: item).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
@@ -180,7 +193,11 @@ struct PriceItemView: View {
                             ToggleRow(label: "Tell me when the price moves", isOn: Binding(get: { item.tracked }, set: { on in Task { await model.setPriceTracking(on, item: item) } }))
                         }
                         .padding(.horizontal, Theme.Spacing.s16)
-                        Text(item.tracked ? "The next purchase at a different price becomes a heads-up the moment it lands." : (item.source == .named ? "Poise groups every charge you’ve named “\(item.name)”. Name the next one the same way and it joins the run." : "Every charge from \(item.merchant.prettyMerchant) counts as one thing because they cost about the same."))
+                        Text(item.tracked ? "The next purchase at a different price becomes a heads-up the moment it lands."
+                             : item.source == .named ? "Poise groups every charge you’ve named “\(item.name)”. Name the next one the same way and it joins the run."
+                             : item.source == .plan ? "The plan’s own charges — what \(item.merchant.prettyMerchant) bills on schedule. Anything else from them is usage."
+                             : item.steady ? "Every charge from \(item.merchant.prettyMerchant) counts as one thing because they cost about the same."
+                             : "What you paid \(item.merchant.prettyMerchant) each time. Prices vary, so there’s no usual — the range and the average are the story.")
                             .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s8)
                     }

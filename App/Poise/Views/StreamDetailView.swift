@@ -8,8 +8,13 @@ struct StreamDetailView: View {
     @Environment(\.openURL) private var openURL
     let stream: RecurringStream
     @State private var selected: PoiseKit.Transaction?
+    @State private var cancelling = false
+    @State private var cancelDate = Date.now
 
     private var charges: [PoiseKit.Transaction] { model.charges(for: stream) }
+    private var cancelledOn: Date? { model.isCancelled(stream) }
+    private var live: RecurringStream { model.allStreams.first { $0.id == stream.id } ?? stream }   // the current shape, after re-filing
+    private var dismissed: Bool { model.settings.dismissedStreams.contains(stream.id) }
     private var headsUp: Bool { model.isWatched(merchantKey: PoiseKit.Transaction.merchantKey(stream.merchant)) }
     private var daysToNext: Int { Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: .now), to: stream.nextExpected).day ?? 0 }
     private var yearlyDelta: Decimal? {
@@ -22,8 +27,12 @@ struct StreamDetailView: View {
             ScrollView {
                 VStack(spacing: 0) {
                     hero
-                    callout
-                    SectionHeader(title: charges.isEmpty ? "Charges" : "Charges · \(charges.count)")
+                    if let cancelledOn { cancelledCard(cancelledOn) }
+                    else if stream.isEnded { endedCard }
+                    else { callout }
+                    if stream.kind != .income, cancelledOn == nil { kindChooser.padding(.top, Theme.Spacing.s4) }
+                    if stream.kind != .income, let usage = model.usage(for: stream), usage.thisMonth > 0 || usage.lastMonth > 0 { usageCard(usage).padding(.top, Theme.Spacing.s12) }
+                    SectionHeader(title: charges.isEmpty ? "Charges" : (model.usage(for: stream) != nil ? "Plan charges · \(charges.count)" : "Charges · \(charges.count)"))
                     Card {
                         if charges.isEmpty {
                             EmptyStateView(symbol: "arrow.clockwise", title: "No charges in the last year", body: "The stream is older than the feed Poise keeps on the phone.")
@@ -38,16 +47,24 @@ struct StreamDetailView: View {
 
                     SectionHeader(title: "Manage")
                     Card {
-                        ToggleRow(label: "Heads-up before it renews", isOn: Binding(get: { headsUp }, set: { on in Task { await model.setRenewalHeadsUp(on, for: stream) } }))
-                        RowDivider()
-                        NavRow(symbol: "xmark.circle", label: "Not a subscription", value: "") { Task { await model.dismiss(stream) } }
+                        if cancelledOn != nil {
+                            NavRow(symbol: "arrow.uturn.backward", label: "Not cancelled after all", value: "") { Task { await model.uncancel(stream) } }
+                        } else {
+                            ToggleRow(label: "Heads-up before it renews", isOn: Binding(get: { headsUp }, set: { on in Task { await model.setRenewalHeadsUp(on, for: stream) } }))
+                            if stream.kind != .income {
+                                RowDivider()
+                                NavRow(symbol: "xmark.circle", label: stream.isEnded ? "I cancelled this" : "I cancelled this", value: "") { cancelDate = .now; cancelling = true }
+                            }
+                        }
                     }
                     .padding(.horizontal, Theme.Spacing.s16)
-                    Text(headsUp ? "The next \(stream.merchant) charge becomes a heads-up the moment it lands." : "Turn this on and the next charge becomes a heads-up the moment it lands.")
+                    Text(cancelledOn != nil ? "Undo brings it back exactly as it was."
+                         : stream.kind == .income ? (headsUp ? "The next \(stream.merchant) deposit becomes a heads-up the moment it lands." : "Turn this on and the next deposit becomes a heads-up the moment it lands.")
+                         : "Cancelled means it stops counting everywhere — and if \(stream.merchant.prettyMerchant) charges again, it goes to the top of Leaks with a heads-up.")
                         .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s8)
 
-                    if stream.kind != .income {
+                    if stream.kind != .income, cancelledOn == nil {
                         Button("How to cancel \(stream.merchant)") {
                             let q = "cancel \(stream.merchant) subscription".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
                             if let url = URL(string: "https://www.google.com/search?q=\(q)") { openURL(url) }
@@ -63,7 +80,54 @@ struct StreamDetailView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.tint(Theme.Accent.default) } }
             .sheet(item: $selected) { t in TransactionDetailView(transaction: t) }
+            .sheet(isPresented: $cancelling) {
+                CancelSheet(stream: stream, date: $cancelDate) { Task { await model.cancel(stream, on: cancelDate) } }
+                    .presentationDetents([.height(420)]).presentationDragIndicator(.visible)
+            }
         }
+    }
+
+    // MARK: cancelled / ended / re-filed
+
+    private func cancelledCard(_ on: Date) -> some View {
+        calloutCard(symbol: "checkmark.shield", tint: Theme.Status.good, background: Theme.Status.goodBg,
+                    title: "Cancelled \(on.formatted(.dateTime.month(.abbreviated).day())) — Poise stopped counting it",
+                    body: "\(stream.amount.money)\(stream.cadence.perLabel) out of Subscriptions, Next 14 and the verdict. If \(stream.merchant.prettyMerchant) charges you again, it goes straight to the top of Leaks and you get a heads-up the moment it lands.")
+    }
+
+    private var endedCard: some View {
+        calloutCard(symbol: "moon.zzz", tint: Theme.Text.secondary, background: Theme.Bg.subtle,
+                    title: "Ended on its own · \(stream.quietLabel)",
+                    body: "Last charge \(stream.lastSeen.formatted(.dateTime.month(.abbreviated).day())) and nothing since, so it stopped counting. If \(stream.merchant.prettyMerchant) charges again it comes back — with a heads-up.")
+    }
+
+    /// Subscription, bill, or just purchases that happened to line up.
+    private var kindChooser: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
+            Text("THIS IS A…").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary)
+            HStack(spacing: 8) {
+                Chip(label: "Subscription", symbol: "arrow.clockwise", on: !dismissed && live.kind == .subscription) { Task { await model.setStreamKind(stream, .subscription) } }
+                Chip(label: "Bill", symbol: "house", on: !dismissed && live.kind == .bill) { Task { await model.setStreamKind(stream, .bill) } }
+                Chip(label: "Just purchases", symbol: "bag", on: dismissed) { Task { await model.setStreamKind(stream, nil) } }
+            }
+            Text("Subscriptions and bills both land in Next 14; “Just purchases” takes it out of Leaks.").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16)
+    }
+
+    private func usageCard(_ u: AppModel.Usage) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "bolt").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.Accent.default).padding(.top, 2)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Plus usage · \(u.thisMonth.money2) this month").font(Theme.Font.subheadStrong).foregroundStyle(Theme.Text.primary)
+                Text("\(u.count) pay-as-you-go charge\(u.count == 1 ? "" : "s") on top of the \(stream.amount.money) plan — normal for \(stream.merchant.prettyMerchant), and not counted as the subscription. Last month: \(u.lastMonth.money2).")
+                    .font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Theme.Spacing.s16)
+        .background(Theme.Accent.subtle, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+        .padding(.horizontal, Theme.Spacing.s16)
     }
 
     private var hero: some View {
@@ -74,10 +138,16 @@ struct StreamDetailView: View {
             }
             .frame(width: 64, height: 64)
             Text(stream.merchant).font(Theme.Font.titleMD).foregroundStyle(Theme.Text.primary).multilineTextAlignment(.center).padding(.top, 4)
-            Text("\(stream.cadence.title) · \(stream.cadence == .annual ? "renews" : "next") \(stream.nextExpected.formatted(.dateTime.month(.abbreviated).day()))")
+            Text(stream.isEnded || cancelledOn != nil ? "\(stream.cadence.title) · last charge \(stream.lastSeen.formatted(.dateTime.month(.abbreviated).day()))" : "\(stream.cadence.title) · \(stream.cadence == .annual ? "renews" : "next") \(stream.nextExpected.formatted(.dateTime.month(.abbreviated).day()))")
                 .font(Theme.Font.subhead).foregroundStyle(Theme.Text.secondary)
             Text(stream.amount.money2).font(Theme.Font.moneyLG).foregroundStyle(Theme.Text.primary).padding(.top, 2)
-            if let previous = stream.previousAmount, stream.priceWentUp {
+            if let cancelledOn {
+                Text("CANCELLED \(cancelledOn.formatted(.dateTime.month(.abbreviated).day()).uppercased())").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Status.track)
+                    .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.Status.trackBg, in: Capsule()).padding(.top, 4)
+            } else if stream.isEnded {
+                Text("ENDED").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary)
+                    .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.Bg.subtle, in: Capsule()).padding(.top, 4)
+            } else if let previous = stream.previousAmount, stream.priceWentUp {
                 Text("WAS \(previous.money2)").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Status.track)
             }
         }
@@ -118,5 +188,35 @@ extension Cadence {
     }
     var perYear: Decimal {
         switch self { case .weekly: 52; case .biweekly: 26; case .semimonthly: 24; case .monthly: 12; case .quarterly: 4; case .annual: 1 }
+    }
+}
+
+
+/// "Cancelled Cursor?" — when, and what happens next.
+struct CancelSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let stream: RecurringStream
+    @Binding var date: Date
+    let confirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
+            Text("Cancelled \(stream.merchant.prettyMerchant)?").font(Theme.Font.titleMD).foregroundStyle(Theme.Text.primary).padding(.top, Theme.Spacing.s12)
+            Text("Poise stops counting the \(stream.amount.money)\(stream.cadence.perLabel) from the date you cancelled and keeps an eye out: a charge after that goes to the top of Leaks with a heads-up.")
+                .font(Theme.Font.body).foregroundStyle(Theme.Text.secondary)
+            HStack {
+                Text("When did you cancel?").font(Theme.Font.body).foregroundStyle(Theme.Text.primary)
+                Spacer()
+                DatePicker("", selection: $date, in: ...Date.now, displayedComponents: .date).labelsHidden().tint(Theme.Accent.default)
+            }
+            .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 52)
+            .background(Theme.Bg.elevated, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous).strokeBorder(Theme.Border.subtle))
+            Button("Mark as cancelled") { confirm(); dismiss() }.buttonStyle(.primary).padding(.top, Theme.Spacing.s4)
+            Button("Not yet") { dismiss() }.buttonStyle(.ghost)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Theme.Spacing.s16)
+        .background(Theme.Bg.base)
     }
 }

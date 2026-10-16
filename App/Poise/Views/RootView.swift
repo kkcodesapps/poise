@@ -24,7 +24,6 @@ struct RootView: View {
         .sheet(item: $model.selectedStream) { s in StreamDetailView(stream: s) }
         .sheet(isPresented: $model.showSince, onDismiss: { model.dismissSince() }) { SinceView() }
         .sheet(item: $model.selectedMerchant) { m in MerchantView(merchantKey: m.key) }
-        .sheet(isPresented: $model.showPrices) { PricesView() }
         .sheet(item: $model.selectedPriceItem) { ref in PriceItemView(itemID: ref.id) }
         #if DEBUG
         .sheet(isPresented: $model.showWidgetPreview) { WidgetPreviewSheet() }
