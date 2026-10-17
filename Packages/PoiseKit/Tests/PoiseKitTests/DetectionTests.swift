@@ -29,11 +29,22 @@ struct DetectionTests {
         #expect(pay.nextExpected == Fix.calendar.startOfDay(for: Fix.day(2026, 9, 25)))
     }
 
-    @Test func irregularAmountsOrGapsAreNotStreams() {
+    @Test func irregularAmountsAreNotStreamsAndQuietOnesAreKeptAsEnded() {
         let irregular = monthly("i", "Amazon", ["12.00", "80.00", "33.50"], day: 3, category: .shopping)
         let ended = monthly("e", "Old Gym", ["40", "40"], day: 5)   // last seen July 5 → two missed periods by Sep 15
         let streams = RecurringDetector.detect(irregular + ended, now: now, calendar: Fix.calendar)
-        #expect(streams.isEmpty)
+        #expect(streams.map(\.merchant) == ["Old Gym"])
+        let gym = streams[0]
+        #expect(gym.isEnded && gym.endedAt == Fix.calendar.startOfDay(for: Fix.day(2026, 8, 5)) && gym.returnedAt == nil)
+    }
+
+    @Test func aQuietStreamThatChargesAgainCameBack() {
+        // Headspace monthly Mar–Jun, silent through the summer, then again on Sep 12: one stream, active, marked as returned.
+        var rows = (0..<4).map { Fix.tx("h\($0)", "card", "-12.99", "Headspace", on: Fix.day(2026, 3 + $0, 12), category: .subscriptions) }
+        rows.append(Fix.tx("h9", "card", "-12.99", "Headspace", on: Fix.day(2026, 9, 12), category: .subscriptions))
+        let s = try! #require(RecurringDetector.detect(rows, now: now, calendar: Fix.calendar).first)
+        #expect(!s.isEnded && s.returnedAt == Fix.calendar.startOfDay(for: Fix.day(2026, 9, 12)) && s.transactionIDs.count == 5)
+        #expect(s.cadence == Cadence.monthly && s.nextExpected == Fix.calendar.startOfDay(for: Fix.day(2026, 10, 12)))
     }
 
     @Test func refundLinksToTheOriginalCharge() {
@@ -73,6 +84,21 @@ struct DetectionTests {
         // A year of paydays walks straight through February 2027 (the 28th is a Sunday → Fri the 26th) without stalling.
         let year = s.occurrences(after: Fix.day(2026, 9, 20), through: Fix.day(2027, 9, 20), calendar: Fix.calendar)
         #expect(year.count == 24 && year.contains(Fix.calendar.startOfDay(for: Fix.day(2027, 2, 26))) && year.contains(Fix.calendar.startOfDay(for: Fix.day(2027, 3, 15))))
+    }
+
+    @Test func aCancelledStreamThatChargesAgainIsTheTopInsight() {
+        var rows = (0..<4).map { Fix.tx("c\($0)", "card", "-200", "Cursor", on: Fix.day(2026, 6 + $0, 19), category: .subscriptions) }
+        let streams = RecurringDetector.detect(rows, now: Fix.day(2026, 9, 21), calendar: Fix.calendar)
+        let cancelled = ["spend|cursor": Fix.day(2026, 9, 21)]
+        #expect(Cancellations.chargedAfterCancel(streams: streams, cancelled: cancelled, transactions: rows, calendar: Fix.calendar).isEmpty)
+        rows.append(Fix.tx("c9", "card", "-200", "Cursor", on: Fix.day(2026, 10, 19), category: .subscriptions))
+        let ins = try! #require(Cancellations.chargedAfterCancel(streams: streams, cancelled: cancelled, transactions: rows, calendar: Fix.calendar).first)
+        #expect(ins.kind == Insight.Kind.cancelledCharge && ins.rank == 0 && ins.id == "cancelled-spend|cursor-c9" && ins.title == "Cursor charged you after you cancelled" && ins.body.hasPrefix("$200.00 on Oct 19"))
+        // A stream that came back this week gets the quieter card.
+        var back = (0..<4).map { Fix.tx("h\($0)", "card", "-12.99", "Headspace", on: Fix.day(2026, 3 + $0, 12), category: .subscriptions) }
+        back.append(Fix.tx("h9", "card", "-12.99", "Headspace", on: Fix.day(2026, 9, 12), category: .subscriptions))
+        let r = Cancellations.returned(streams: RecurringDetector.detect(back, now: now, calendar: Fix.calendar), now: now, calendar: Fix.calendar)
+        #expect(r.first?.kind == Insight.Kind.streamReturned && r.first?.title == "Headspace is back")
     }
 
     @Test func duplicatesAndFees() {

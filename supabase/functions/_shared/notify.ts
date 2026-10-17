@@ -79,6 +79,16 @@ export async function notifyAfterSync(db: SupabaseClient, userID: string, writte
     await sendPush(db, userID, { kind: "heads", title: `Charged twice at ${pretty(r.merchant)}?`, body: `${money(r.amount)} twice today on the same card. Tap to look.`, data: { transaction: r.id, insight: `dup-${r.id}` }, collapseID: `dup-${r.id}` });
   }
 
+  // --- a subscription the user marked cancelled, billing again: the top leak, and a push the moment it lands.
+  const { data: cancelRow } = await db.from("settings").select("cancelled_streams").eq("user_id", userID).maybeSingle();
+  const cancelled = (cancelRow?.cancelled_streams ?? {}) as Record<string, string>;
+  for (const r of spend) {
+    const key = `spend|${merchantKey(r.merchant)}`;
+    const since = Object.entries(cancelled).find(([id]) => id === key || id.startsWith(`${key}|`))?.[1];
+    if (!since || r.posted_date < since) continue;
+    await sendPush(db, userID, { kind: "heads", title: `${pretty(r.merchant)} charged you after you cancelled`, body: `${money(r.amount)} on ${r.posted_date.slice(5).replace("-", "/")} — you marked it cancelled ${since.slice(5).replace("-", "/")}. Dispute it, or cancel again.`, data: { transaction: r.id, insight: `cancelled-${r.id}` }, collapseID: `cancelled-${r.id}` });
+  }
+
   // --- a tracked item bought at a different price. Only merchant items can be matched here: a name the user gives a
   // charge isn't known until they give it, so those show up in the app the moment they do.
   const { data: priceWatches } = await db.from("watches").select("id, matcher").eq("user_id", userID).eq("kind", "price").eq("status", "watching");

@@ -2,7 +2,7 @@ import Foundation
 
 /// The one thing worth saying. Ranked so Home shows the top one and Leaks / Pace / Review get the rest.
 public struct Insight: Hashable, Sendable, Identifiable {
-    public enum Kind: String, Sendable, Codable { case crunch, duplicate, priceUp, fee, paceOverrun, positive, newStream, renewal, watchTriggered, refundOverdue, refundArrived, statement, priceMoved }
+    public enum Kind: String, Sendable, Codable { case crunch, duplicate, priceUp, fee, paceOverrun, positive, newStream, renewal, watchTriggered, refundOverdue, refundArrived, statement, priceMoved, cancelledCharge, streamReturned }
     public enum Tone: String, Sendable { case heads, neutral, good }
 
     public let id: String

@@ -15,7 +15,7 @@ public struct PriceItem: Identifiable, Hashable, Sendable {
             self.id = id; self.date = date; self.price = price; self.merchant = merchant; self.accountID = accountID; self.pending = pending
         }
     }
-    public enum Source: String, Hashable, Sendable { case merchant, named }
+    public enum Source: String, Hashable, Sendable { case merchant, named, plan }
     public enum Direction: Hashable, Sendable { case up, down, steady }
 
     public let id: String              // "merchant|<merchant key>" or "named|<name key>"
@@ -37,15 +37,22 @@ public struct PriceItem: Identifiable, Hashable, Sendable {
     public var changedAt: Date?
     /// Set by the app from the user's watches.
     public var tracked = false
+    /// Prices cluster (most within ±25 % of the median) — a usual price means something. Groceries and usage don't.
+    public var steady = true
+    /// For a plan: the stream it follows. For usage: the plan it sits on top of.
+    public var streamID: String?
+    /// "plan" / "usage" when a merchant has both, so the two runs read apart: "Cursor · plan", "Cursor · usage".
+    public var planSuffix: String?
 
     public var last: Decimal { purchases.last?.price ?? 0 }
+    public var average: Decimal { purchases.isEmpty ? 0 : (purchases.reduce(Decimal(0)) { $0 + $1.price } / Decimal(purchases.count)).roundedToCents }
     public var count: Int { purchases.count }
     public var firstSeen: Date { purchases.first?.date ?? .distantPast }
     public var lastSeen: Date { purchases.last?.date ?? .distantPast }
     public var delta: Decimal { (last - usual).roundedToCents }
     public var deltaPercent: Double { usual > 0 ? Double(truncating: (delta / usual) as NSDecimalNumber) : 0 }
     public var direction: Direction {
-        guard PriceTracker.moved(last, from: usual) else { return .steady }
+        guard steady, PriceTracker.moved(last, from: usual) else { return .steady }
         return delta > 0 ? .up : .down
     }
     /// Bought within the last 45 days at a price that isn't the usual one.
@@ -55,8 +62,8 @@ public struct PriceItem: Identifiable, Hashable, Sendable {
 }
 
 public enum PriceTracker {
-    /// A merchant becomes an item after this many purchases; a name the user gave needs one fewer — the naming was the intent.
-    public static let minimumMerchantPurchases = 3
+    /// Anything bought twice is worth a run.
+    public static let minimumMerchantPurchases = 2
     public static let minimumNamedPurchases = 2
 
     /// A price "moved" when it differs from the usual by at least 3 % and fifty cents.
@@ -72,20 +79,38 @@ public enum PriceTracker {
             .trimmingCharacters(in: .whitespaces)
     }
 
-    public static func items(in transactions: [Transaction], now: Date, calendar: Calendar = .current) -> [PriceItem] {
+    /// Every run worth a chart: named charges, a subscription's plan (the stream's own rows), and each merchant's remaining
+    /// charges — steady or not. A merchant with a plan gets its other charges as a "usage" run.
+    public static func items(in transactions: [Transaction], streams: [RecurringStream] = [], now: Date, calendar: Calendar = .current) -> [PriceItem] {
         let rows = transactions.filter { ($0.kind == .spend || $0.kind == .untracked) && $0.amount < 0 && !$0.excluded }
         var named: [String: [Transaction]] = [:], byMerchant: [String: [Transaction]] = [:]
+        let planRows = Dictionary(uniqueKeysWithValues: streams.filter { $0.kind != .income }.map { ($0.id, Set($0.transactionIDs)) })
+        let inPlan = Set(planRows.values.flatMap { $0 })
         for t in rows {
             if let n = t.displayName, !n.trimmingCharacters(in: .whitespaces).isEmpty { named[nameKey(n), default: []].append(t) }
-            else { byMerchant[t.merchantKey, default: []].append(t) }
+            else if !inPlan.contains(t.id) { byMerchant[t.merchantKey, default: []].append(t) }
         }
         var out: [PriceItem] = []
         for (key, group) in named where group.count >= minimumNamedPurchases {
             if let item = build(id: "named|\(key)", source: .named, name: group.max { $0.displayDate < $1.displayDate }!.displayName ?? key, group: group, calendar: calendar) { out.append(item) }
         }
-        for (key, group) in byMerchant where group.count >= minimumMerchantPurchases && sellsOneThing(group) {
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        for s in streams where s.kind != .income {
+            let group = s.transactionIDs.compactMap { byID[$0] }.filter { ($0.displayName ?? "").trimmingCharacters(in: .whitespaces).isEmpty }   // named rows already have their run
+            guard group.count >= 2 else { continue }
+            let hasOthers = !(byMerchant[Transaction.merchantKey(s.merchant)] ?? []).isEmpty
+            if var item = build(id: "plan|\(s.id)", source: .plan, name: s.merchant, group: group, calendar: calendar) {
+                item.streamID = s.id; item.planSuffix = hasOthers ? "plan" : nil
+                out.append(item)
+            }
+        }
+        for (key, group) in byMerchant where group.count >= minimumMerchantPurchases {
             let latest = group.max { $0.displayDate < $1.displayDate }!
-            if let item = build(id: "merchant|\(key)", source: .merchant, name: latest.merchant, group: group, calendar: calendar) { out.append(item) }
+            if var item = build(id: "merchant|\(key)", source: .merchant, name: latest.merchant, group: group, calendar: calendar) {
+                item.steady = sellsOneThing(group)
+                if let plan = streams.first(where: { $0.kind != .income && Transaction.merchantKey($0.merchant) == key }) { item.streamID = plan.id; item.planSuffix = "usage"; item.steady = false }   // pay-as-you-go varies by nature
+                out.append(item)
+            }
         }
         return out.sorted { $0.lastSeen > $1.lastSeen }
     }

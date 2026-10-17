@@ -63,9 +63,15 @@ public struct RecurringStream: Identifiable, Hashable, Codable, Sendable {
     public var accountID: String?
     /// The rows behind the stream, newest last.
     public var transactionIDs: [String]
+    /// Set when the stream went quiet for two billing periods on its own: the first date it was expected and didn't come.
+    public var endedAt: Date?
+    /// Set when a stream that had gone quiet charged again: the date of that charge.
+    public var returnedAt: Date?
+
+    public var isEnded: Bool { endedAt != nil }
 
     public init(id: String, merchant: String, kind: StreamKind, cadence: Cadence, amount: Decimal, previousAmount: Decimal? = nil, lastSeen: Date, nextExpected: Date,
-                accountID: String? = nil, transactionIDs: [String] = []) {
+                accountID: String? = nil, transactionIDs: [String] = [], endedAt: Date? = nil, returnedAt: Date? = nil) {
         self.id = id
         self.merchant = merchant
         self.kind = kind
@@ -76,6 +82,8 @@ public struct RecurringStream: Identifiable, Hashable, Codable, Sendable {
         self.nextExpected = nextExpected
         self.accountID = accountID
         self.transactionIDs = transactionIDs
+        self.endedAt = endedAt
+        self.returnedAt = returnedAt
     }
 
     public var priceWentUp: Bool {
