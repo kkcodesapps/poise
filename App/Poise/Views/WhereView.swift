@@ -11,14 +11,16 @@ struct WhereView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 0) {
-                    if let b = model.breakdown {
-                        PeriodSwitch(period: $model.wherePeriod).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s4)
+                    modeSwitch.padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s4)
+                    if model.whereMode == .prices {
+                        PricesList()
+                    } else if let b = model.breakdown {
+                        PeriodSwitch(period: $model.wherePeriod).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
                         stepper(b)
                         headline(b)
                         lens(b)
                         strip(b)
                         if let sel = selectedSlice, let s = b.slices.first(where: { $0.id == sel }) { SliceCard(slice: s, accounts: model.accounts) { selectedSlice = nil } onSelect: { model.selectedTransaction = $0 }.padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12) }
-                        if !model.priceItems.isEmpty { pricesEntry.padding(.top, Theme.Spacing.s12) }
                         rows(b)
                     } else {
                         EmptyStateView(symbol: "chart.bar.doc.horizontal", title: "Where shows up here", body: "Link a bank and Poise will break spending down by category — by week, month or year.")
@@ -101,27 +103,22 @@ struct WhereView: View {
         }
     }
 
-    /// The door to Prices: how many of the things you buy again cost more this month, and how many are tracked.
-    private var pricesEntry: some View {
-        let up = model.pricesMovedLately.filter { $0.direction == .up }.count, tracked = model.priceItems.filter(\.tracked).count
-        let line = (up > 0 ? "\(up) cost\(up == 1 ? "s" : "") more this month" : "\(model.priceItems.count) thing\(model.priceItems.count == 1 ? "" : "s") you buy again") + (tracked > 0 ? " · \(tracked) tracked" : "")
-        return Button { model.showPrices = true } label: {
-            HStack(spacing: Theme.Spacing.s12) {
-                IconCircle(symbol: "chart.line.uptrend.xyaxis", size: 40, fill: Theme.Accent.subtle, color: Theme.Accent.default)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Prices").font(Theme.Font.headline).foregroundStyle(Theme.Text.primary)
-                    Text(line).font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
+    /// Spending or Prices — the tab's two faces.
+    private var modeSwitch: some View {
+        @Bindable var model = model
+        return HStack(spacing: 0) {
+            ForEach(AppModel.WhereMode.allCases, id: \.self) { mode in
+                let on = model.whereMode == mode
+                Button { withAnimation(.snappy) { model.whereMode = mode } } label: {
+                    Text(mode.rawValue).font(on ? Theme.Font.subheadStrong : Theme.Font.subhead).foregroundStyle(on ? Theme.Text.primary : Theme.Text.secondary)
+                        .frame(maxWidth: .infinity).padding(.vertical, 7)
+                        .background(on ? Theme.Bg.elevated : .clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
-                Spacer()
-                Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.Text.tertiary)
+                .buttonStyle(.plain)
             }
-            .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
-            .background(Theme.Bg.elevated, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous).strokeBorder(Theme.Border.subtle))
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .padding(.horizontal, Theme.Spacing.s16)
+        .padding(3)
+        .background(Theme.Bg.subtle, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func strip(_ b: Breakdown) -> some View {

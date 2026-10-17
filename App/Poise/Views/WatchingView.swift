@@ -7,12 +7,12 @@ struct WatchingView: View {
 
     private var refunds: [Watch] { model.watches.filter { $0.kind == .refund && $0.status.isOpen } }
     private var merchants: [Watch] { model.watches.filter { $0.kind == .merchant && $0.status.isOpen } }
-    private var resolved: [Watch] { model.watches.filter { !$0.status.isOpen }.sorted { ($0.resolvedAt ?? .distantPast) > ($1.resolvedAt ?? .distantPast) } }
+    private var resolved: [Watch] { model.watches.filter { !$0.status.isOpen && $0.kind != .price }.sorted { ($0.resolvedAt ?? .distantPast) > ($1.resolvedAt ?? .distantPast) } }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                if model.watches.isEmpty {
+                if model.watches.allSatisfy({ $0.kind == .price }) {
                     EmptyStateView(symbol: "bookmark", title: "Nothing watched yet", body: "Long-press any charge, or open it and use Watch: wait for a refund, or be told if a merchant charges you again.")
                 } else {
                     if !refunds.isEmpty {
@@ -110,7 +110,7 @@ struct WatchRowView: View {
 struct WatchingCard: View {
     @Environment(AppModel.self) private var model
     var body: some View {
-        let open = model.openWatches
+        let open = model.openWatches.filter { $0.kind != .price }
         Button { model.showWatching = true } label: {
             VStack(spacing: 0) {
                 HStack {
