@@ -181,6 +181,27 @@ struct EmptyStateView: View {
 }
 
 /// Pill selector used for categories and account roles.
+/// A small uppercase label beside a name that never competes with it: PLAN / USAGE on a price run, ENDED / CANCELLED on a stream.
+struct Tag: View {
+    enum Tone { case neutral, accent, track, good }
+    let label: String
+    var tone: Tone = .neutral
+    private var colors: (fill: Color, text: Color) {
+        switch tone {
+        case .neutral: (Theme.Bg.subtle, Theme.Text.secondary)
+        case .accent: (Theme.Accent.subtle, Theme.Accent.default)
+        case .track: (Theme.Status.trackBg, Theme.Status.track)
+        case .good: (Theme.Status.goodBg, Theme.Status.good)
+        }
+    }
+    var body: some View {
+        Text(label.uppercased()).font(Theme.Font.caption2Strong).foregroundStyle(colors.text)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(colors.fill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .fixedSize()
+    }
+}
+
 struct Chip: View {
     let label: String
     let symbol: String

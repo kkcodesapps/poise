@@ -142,11 +142,9 @@ struct StreamDetailView: View {
                 .font(Theme.Font.subhead).foregroundStyle(Theme.Text.secondary)
             Text(stream.amount.money2).font(Theme.Font.moneyLG).foregroundStyle(Theme.Text.primary).padding(.top, 2)
             if let cancelledOn {
-                Text("CANCELLED \(cancelledOn.formatted(.dateTime.month(.abbreviated).day()).uppercased())").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Status.track)
-                    .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.Status.trackBg, in: Capsule()).padding(.top, 4)
+                Tag(label: "Cancelled \(cancelledOn.formatted(.dateTime.month(.abbreviated).day()))", tone: .track).padding(.top, 4)
             } else if stream.isEnded {
-                Text("ENDED").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary)
-                    .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.Bg.subtle, in: Capsule()).padding(.top, 4)
+                Tag(label: "Ended").padding(.top, 4)
             } else if let previous = stream.previousAmount, stream.priceWentUp {
                 Text("WAS \(previous.money2)").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Status.track)
             }

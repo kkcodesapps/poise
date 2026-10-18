@@ -2,6 +2,10 @@
 
 Every TestFlight build bumps the version; the section for it becomes the build's "What to Test" notes.
 
+## 0.3.1 — 2026-09-21
+
+- Plan and usage are now small tags beside the name (PLAN, USAGE) instead of part of it, so a label reads as a label. Cancelled and ended subscriptions carry the same kind of tag.
+
 ## 0.3.0 — 2026-09-21
 
 - Prices has a home: the Where tab now switches between Spending and Prices, and the list holds everything you've bought twice or more — steady things with a usual price, varied things (groceries, gas, usage) with their range, and a subscription's plan as its own run.

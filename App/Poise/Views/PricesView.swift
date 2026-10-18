@@ -81,13 +81,21 @@ struct PricesList: View {
 struct PriceItemRow: View {
     @Environment(AppModel.self) private var model
     let item: PriceItem
+    /// A plan says its rhythm ("Monthly · usually $200.00"); everything else, how often and the usual or the range.
+    private var subtitle: String {
+        if item.source == .plan, let s = item.streamID.flatMap({ id in model.allStreams.first { $0.id == id } }) { return "\(s.cadence.label.capitalized) · usually \(item.usual.money2)" }
+        return item.subtitle
+    }
 
     var body: some View {
         HStack(spacing: 10) {
             MerchantCircle(logoURL: item.logoURL, symbol: model.categories.symbol(item.categoryID), size: 40)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.displayName).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1)
-                Text(item.subtitle).font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(item.displayName).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1)
+                    if let tag = item.tag { Tag(label: tag.label, tone: tag.tone) }
+                }
+                Text(subtitle).font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
             Sparkline(values: item.purchases.suffix(8).map { NSDecimalNumber(decimal: $0.price).doubleValue }, color: item.tone).frame(width: 28, height: 12)
@@ -101,7 +109,12 @@ struct PriceItemRow: View {
 }
 
 extension PriceItem {
-    var displayName: String { (source == .named ? name : name.prettyMerchant) + (planSuffix.map { " · \($0)" } ?? "") }
+    var displayName: String { source == .named ? name : name.prettyMerchant }
+    /// PLAN on a subscription's own run, USAGE on what sits on top of it — labels, never part of the name.
+    var tag: (label: String, tone: Tag.Tone)? {
+        if source == .plan { return ("plan", .accent) }
+        return planSuffix == "usage" ? ("usage", .neutral) : nil
+    }
     var tone: Color { direction == .up ? Theme.Status.track : direction == .down ? Theme.Status.good : Theme.Text.tertiary }
     /// "▲ $5.00 · 17%", "▼ $6.30 · 12%", "steady", or "varies" for a run with no usual price.
     var deltaLabel: String {
@@ -161,7 +174,8 @@ struct PriceItemView: View {
                         VStack(spacing: 4) {
                             MerchantCircle(logoURL: item.logoURL, symbol: model.categories.symbol(item.categoryID), size: 64)
                             Text(item.displayName).font(Theme.Font.titleMD).foregroundStyle(Theme.Text.primary).multilineTextAlignment(.center).padding(.top, 4)
-                            Text("\(model.categories.resolve(item.categoryID).name)\(item.source == .named ? " · \(item.merchant.prettyMerchant)" : "") · \(item.count) purchase\(item.count == 1 ? "" : "s") since \(item.firstSeen.formatted(.dateTime.month(.abbreviated).year()))")
+                            if let tag = item.tag { Tag(label: tag.label, tone: tag.tone) }
+                            Text("\(model.categories.resolve(item.categoryID).name)\(item.source == .named ? " · \(item.merchant.prettyMerchant)" : "") · \(item.count) \(item.source == .plan ? "charge" : "purchase")\(item.count == 1 ? "" : "s") since \(item.firstSeen.formatted(.dateTime.month(.abbreviated).year()))")
                                 .font(Theme.Font.subhead).foregroundStyle(Theme.Text.secondary).multilineTextAlignment(.center)
                         }
                         .frame(maxWidth: .infinity).padding(.top, Theme.Spacing.s12).padding(.bottom, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
@@ -174,7 +188,7 @@ struct PriceItemView: View {
                         PriceChart(item: item).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
                         if item.direction != .steady { callout(item).padding(.top, Theme.Spacing.s12) }
 
-                        SectionHeader(title: "Purchases · \(item.count)")
+                        SectionHeader(title: "\(item.source == .plan ? "Plan charges" : "Purchases") · \(item.count)")
                         Card {
                             let rows = item.purchases.reversed().compactMap { p in model.transactions.first { $0.id == p.id } }
                             ForEach(Array(rows.enumerated()), id: \.element.id) { i, t in
