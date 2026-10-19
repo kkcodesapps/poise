@@ -81,6 +81,11 @@ final class AppModel {
     var whereMode: WhereMode = .spending
     /// Which chip the Prices list opens on — "up" from the Leaks tile.
     var pricesFilter = "all"
+    /// The day the screens are drawn against. Relative labels ("TODAY", "yesterday") read from this, not from `Date.now`,
+    /// so an app left open across midnight doesn't keep calling yesterday today.
+    private(set) var today = Calendar.current.startOfDay(for: .now)
+    private var midnight: Task<Void, Never>?
+
     /// Every stream the detector found, ended ones included; `streams` is the live subset the engines use.
     var allStreams: [RecurringStream] = []
     /// Subscriptions and bills that stopped: marked cancelled by the user, or quiet for two periods on their own.
@@ -192,6 +197,7 @@ final class AppModel {
             let elapsed = Date.now.timeIntervalSince(began)
             if elapsed < 0.5 { try? await Task.sleep(for: .seconds(0.5 - elapsed)) }
             launch = .ready
+            rollDay()
             if !looksLinked, !UserDefaults.standard.bool(forKey: "onboardingDone") { onboarding = isAnonymous ? .welcome : .link }
             await refreshPushStatus()
             if settings.faceID { isLocked = true; await unlock() }
@@ -226,6 +232,11 @@ final class AppModel {
             // `-open-merchant` opens the merchant page for the first spend charge; `-since` the since-you-last-looked sheet.
             if args.contains("-open-merchant"), let t = transactions.first(where: { $0.kind == .spend }) { Task { try? await Task.sleep(for: .seconds(1)); selectedMerchant = .init(key: t.merchantKey) } }
             if args.contains("-since") { Task { try? await Task.sleep(for: .seconds(1)); showSince = true } }
+            // `-stale-day` pretends the app was left open overnight: the feed is drawn against yesterday, then rolls.
+            if args.contains("-stale-day") {
+                pretendYesterday()
+                Task { try? await Task.sleep(for: .seconds(4)); rollDay() }
+            }
             if args.contains("-widgets") { Task { try? await Task.sleep(for: .seconds(1)); showWidgetPreview = true } }
             // `-seed-prices` names the seeded Amazon orders so an item exists; `-prices` opens the list; `-open-item` the first item.
             if args.contains("-seed-prices") {
@@ -259,6 +270,12 @@ final class AppModel {
             }
             if args.contains("-seed-bills") {
                 try await Backend.client.functions.invoke("financekit-sync", options: FunctionInvokeOptions(headers: ["content-type": "application/json"], body: DebugSeed.bills))
+                await reload()
+            }
+            // `-open-ccpay` opens a card payment's sheet — the row a bank may sign either way.
+            if args.contains("-open-ccpay"), let t = transactions.first(where: { $0.kind == .ccPayment && $0.amount > 0 }) { Task { try? await Task.sleep(for: .seconds(1)); selectedTransaction = t } }
+            if args.contains("-seed-ccpay") {
+                try await Backend.client.functions.invoke("financekit-sync", options: FunctionInvokeOptions(headers: ["content-type": "application/json"], body: DebugSeed.cardPayment))
                 await reload()
             }
             if args.contains("-seed-leaks") {
@@ -480,12 +497,31 @@ final class AppModel {
 
     /// App came to the foreground: refresh if the last one is older than the policy allows (15 min), else just reload.
     func becameActive() async {
+        rollDay()
         await refreshPushStatus()
         if settings.faceID, !isLocked { isLocked = true; await unlock() }
         guard hasLinkedBank else { return }
         if let last = lastForegroundRefresh, Date.now.timeIntervalSince(last) < 15 * 60 { await reload(); return }
         lastForegroundRefresh = .now
         await refresh(trigger: "foreground")
+    }
+
+    #if DEBUG
+    /// `-stale-day`: draw the screens against yesterday, the way an app left open overnight would.
+    func pretendYesterday() { today = Calendar.current.date(byAdding: .day, value: -1, to: today) ?? today }
+    #endif
+
+    /// Midnight: everything dated relative to "today" moves on — the feed's headers, the cash-flow walk, the month's pace.
+    func rollDay() {
+        let day = Calendar.current.startOfDay(for: .now)
+        if day != today { today = day; recompute() }
+        midnight?.cancel()
+        guard let next = Calendar.current.date(byAdding: .day, value: 1, to: day) else { return }
+        midnight = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(1, next.timeIntervalSinceNow + 1)))
+            guard !Task.isCancelled else { return }
+            self?.rollDay()
+        }
     }
 
     /// Foreground / pull-to-refresh: fresh balances now; new bank transactions arrive by webhook and a later reload.

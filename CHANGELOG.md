@@ -2,6 +2,18 @@
 
 Every TestFlight build bumps the version; the section for it becomes the build's "What to Test" notes.
 
+## 0.3.4 — 2026-09-22
+
+- Next 14: a pending card payment reads as money leaving, like a statement, and shows once rather than on both the card and the account it was paid from. It no longer paints a false payday on the chart.
+
+## 0.3.3 — 2026-09-22
+
+- A credit-card payment no longer reads as income. Some banks (Robinhood) sign it positive on the card; Poise shows it plainly, without a plus or the green, whichever side it lands on and however it got classified.
+
+## 0.3.2 — 2026-09-22
+
+- Left the app open overnight and yesterday still said TODAY. The feed's day headers (and "since you last looked") now follow the real day, and everything dated against today — the next two weeks, this month's pace — moves on at midnight.
+
 ## 0.3.1 — 2026-09-21
 
 - Plan and usage are now small tags beside the name (PLAN, USAGE) instead of part of it, so a label reads as a label. Cancelled and ended subscriptions carry the same kind of tag.
