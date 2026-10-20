@@ -62,7 +62,7 @@ struct HomeView: View {
                         Button { model.showSince = true } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: "sparkles").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.Accent.default)
-                                Text("Since \(since.lastLooked.sinceLabel) · \(since.summary)").font(Theme.Font.footnote).foregroundStyle(Theme.Text.primary).multilineTextAlignment(.leading)
+                                Text("Since \(since.lastLooked.sinceLabel(today: model.today)) · \(since.summary)").font(Theme.Font.footnote).foregroundStyle(Theme.Text.primary).multilineTextAlignment(.leading)
                                 Spacer(minLength: 4)
                                 Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.Text.tertiary)
                             }
@@ -98,7 +98,7 @@ struct HomeView: View {
                     }
                     if !model.openWatches.isEmpty { WatchingCard().padding(.top, Theme.Spacing.s8) }
                     if model.looksLinked {
-                        Feed(transactions: model.transactions, accounts: model.accounts) { model.selectedTransaction = $0 }
+                        Feed(transactions: model.transactions, accounts: model.accounts, today: model.today) { model.selectedTransaction = $0 }
                     }
                 }
                 .padding(.horizontal, Theme.Spacing.s16)
@@ -239,6 +239,8 @@ struct VerdictCard: View {
 struct Feed: View {
     let transactions: [PoiseKit.Transaction]
     let accounts: [Account]
+    /// Passed in rather than read from the clock, so every header re-draws when the day rolls over.
+    var today: Date = Calendar.current.startOfDay(for: .now)
     var onSelect: (PoiseKit.Transaction) -> Void = { _ in }
 
     private var days: [(Date, [PoiseKit.Transaction])] {
@@ -253,7 +255,7 @@ struct Feed: View {
                 EmptyStateView(symbol: "bolt", title: "Your feed starts here", body: "Every charge, the day you paid it. Transfers and refunds shown, never counted as spending.")
             }
             ForEach(days, id: \.0) { day, rows in
-                DayHeader(day: day, total: rows.filter { ($0.kind == .spend || $0.kind == .untracked) && !$0.excluded }.reduce(0) { $0 + $1.amount })
+                DayHeader(day: day, total: rows.filter { ($0.kind == .spend || $0.kind == .untracked) && !$0.excluded }.reduce(0) { $0 + $1.amount }, today: today)
                 Card {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { i, t in
                         Button { onSelect(t) } label: { TransactionRowView(transaction: t, account: accounts.first { $0.id == t.accountID }) }
@@ -270,6 +272,7 @@ struct Feed: View {
 struct DayHeader: View {
     let day: Date
     let total: Decimal
+    var today: Date = Calendar.current.startOfDay(for: .now)
     var body: some View {
         HStack {
             Text(label).font(Theme.Font.footnote.weight(.semibold)).foregroundStyle(Theme.Text.tertiary)
@@ -280,8 +283,8 @@ struct DayHeader: View {
     }
     private var label: String {
         let cal = Calendar.current
-        if cal.isDateInToday(day) { return "TODAY" }
-        if cal.isDateInYesterday(day) { return "YESTERDAY" }
+        if cal.isDate(day, inSameDayAs: today) { return "TODAY" }
+        if let yesterday = cal.date(byAdding: .day, value: -1, to: today), cal.isDate(day, inSameDayAs: yesterday) { return "YESTERDAY" }
         return day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()).uppercased()
     }
 }
@@ -341,7 +344,7 @@ struct TransactionRowView: View {
         else if let account { parts.append(account.mask.map { "\(account.name) ••\($0)" } ?? account.name) }
         return parts.joined(separator: " · ")
     }
-    private var amountText: String { (transaction.amount > 0 ? "+" : "") + transaction.amount.money2 }
+    private var amountText: String { transaction.signedAmount }
     private var amountColor: Color {
         if transaction.pending { return Theme.Money.pending }
         switch transaction.kind {

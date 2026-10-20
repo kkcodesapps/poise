@@ -26,7 +26,7 @@ struct SinceView: View {
                 .padding(.bottom, Theme.Spacing.s32)
             }
             .background(Theme.Bg.base)
-            .navigationTitle("Since \(model.since?.lastLooked.sinceLabel ?? "you last looked")")
+            .navigationTitle("Since \(model.since?.lastLooked.sinceLabel(today: model.today) ?? "you last looked")")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() }.tint(Theme.Accent.default) } }
         }

@@ -101,6 +101,17 @@ enum DebugSeed {
         return "{\"transactions\": [\(rows.joined(separator: ","))]}"
     }
 
+    /// `-seed-ccpay`: a card payment signed **positive** on the card, the way Robinhood reports it, plus its matching
+    /// outflow from checking — the pair should read as a movement on both sides, never as income.
+    static var cardPayment: String {
+        let cal = Calendar.current, card = "DEB00000-0000-0000-0000-000000000001", cash = "DEB00000-0000-0000-0000-000000000002"
+        let day = WalletSource.Payload.day(cal.startOfDay(for: .now))
+        func row(_ id: String, _ acct: String, _ debit: Bool) -> String {
+            "{\"id\": \"\(id)\", \"accountID\": \"\(acct)\", \"amount\": 2956.87, \"currency\": \"USD\", \"debit\": \(debit), \"description\": \"PAYMENT THANK YOU\", \"merchant\": \"Payment\", \"mcc\": null, \"type\": \"billPayment\", \"status\": \"pending\", \"date\": \"\(day)\", \"postedDate\": \"\(day)\"}"
+        }
+        return "{\"transactions\": [\(row("seed-ccpay-card", card, false)),\(row("seed-ccpay-cash", cash, true))]}"
+    }
+
     static let more = """
     {"transactions": [
       {"id": "seed-more-\(Int(Date.now.timeIntervalSince1970))", "accountID": "DEB00000-0000-0000-0000-000000000001", "amount": 48.10, "currency": "USD", "debit": true, "description": "Shell", "merchant": "Shell", "mcc": 5541, "type": "pointOfSale", "status": "booked", "date": "\(WalletSource.Payload.day(.now))", "postedDate": "\(WalletSource.Payload.day(.now))"}]}

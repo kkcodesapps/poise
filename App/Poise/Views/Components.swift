@@ -274,6 +274,14 @@ extension Double {
 
 extension Date {
     /// "Tue" for this week, "Sep 9" before that — the moment the app was last in front.
+    /// "earlier today" / "yesterday" / a weekday. Pass the day in view so it can't keep saying today after midnight.
+    func sinceLabel(today: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDate(self, inSameDayAs: today) { return "earlier today" }
+        if let y = cal.date(byAdding: .day, value: -1, to: today), cal.isDate(self, inSameDayAs: y) { return "yesterday" }
+        return sinceLabel
+    }
+
     var sinceLabel: String {
         let cal = Calendar.current
         if cal.isDateInToday(self) { return "earlier today" }
@@ -296,6 +304,11 @@ extension Date {
 extension PoiseKit.Transaction {
     /// The user's name when they gave one; otherwise the bank's descriptor, un-shouted ("ACH ELECTRONIC CREDIT *//").
     var displayMerchant: String { displayName ?? merchant.prettyMerchant }
+
+    /// What the amount reads as. A credit-card payment is money moving against a balance, not money earned — some banks
+    /// (Robinhood) even sign it positive on the card — so it never wears a "+" or the income green.
+    var signedAmount: String { kind == .ccPayment ? magnitude.money2 : (amount > 0 ? "+" : "") + amount.money2 }
+    var readsAsIncome: Bool { kind != .ccPayment && amount > 0 }
 }
 
 extension RecurringStream {
