@@ -15,6 +15,10 @@ struct HomeView: View {
         @Bindable var model = model
         NavigationStack {
             ScrollView {
+                // One root, always: swapping the scroll view's whole content while the search drawer is up (and a
+                // refresh is animating) left the large title and the field on top of each other.
+                VStack(spacing: 0) {
+                searchField
                 if searching {
                     searchResults
                 } else {
@@ -105,10 +109,10 @@ struct HomeView: View {
                 .padding(.top, Theme.Spacing.s4)
                 .padding(.bottom, Theme.Spacing.s24)
                 }
+                }
             }
             .background(Theme.Bg.base)
             .refreshable { await model.refresh() }
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Merchant, note or amount")
             .navigationTitle("Home")
             #if DEBUG
             .onAppear { let a = ProcessInfo.processInfo.arguments; if let i = a.firstIndex(of: "-search"), i + 1 < a.count { searchText = a[i + 1] } }
@@ -125,6 +129,25 @@ struct HomeView: View {
             }
             .navigationDestination(isPresented: $model.showWatching) { WatchingView() }
         }
+    }
+
+    /// The feed's own search field (as drawn in the design). `.searchable`'s navigation-bar drawer and `.refreshable`
+    /// fight each other here: hold a pull open long enough and the large title lands on top of the drawer.
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.Text.tertiary)
+            TextField("Merchant, note or amount", text: $searchText).font(Theme.Font.body).foregroundStyle(Theme.Text.primary)
+                .autocorrectionDisabled().textInputAutocapitalization(.never).submitLabel(.search)
+            if searching {
+                Button {
+                    searchText = ""; filterAccount = nil; filterCategory = nil; filterPending = false; filterExcluded = false
+                } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.Text.tertiary) }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12).frame(height: 40)
+        .background(Theme.Bg.inset, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
+        .padding(.horizontal, Theme.Spacing.s16).padding(.bottom, Theme.Spacing.s8)
     }
 
 }
@@ -332,6 +355,11 @@ struct TransactionRowView: View {
         var parts: [String] = []
         if let note = transaction.note { parts.append(note) }
         if transaction.excluded { parts.append("Left out"); if let account { parts.append(account.name) }; return parts.joined(separator: " · ") }
+        // What it was beats what kind of thing it was: an order's contents replace the category when Poise knows them.
+        if let contents = model.contents(of: transaction), transaction.kind == .spend || transaction.kind == .refund {
+            parts.append(contents)
+            return parts.joined(separator: " · ")
+        }
         switch transaction.kind {
         case .spend: parts.append(model.categories.name(transaction.categoryID))
         case .income: parts.append("Income")

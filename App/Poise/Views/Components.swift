@@ -110,6 +110,7 @@ extension Insight.Kind {
         case .priceMoved: "tag"
         case .cancelledCharge: "exclamationmark.triangle"
         case .streamReturned: "arrow.clockwise"
+        case .categoryOver: "chart.bar"
         }
     }
 }
@@ -199,6 +200,27 @@ struct Tag: View {
             .padding(.horizontal, 6).padding(.vertical, 2)
             .background(colors.fill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .fixedSize()
+    }
+}
+
+/// A filling track — the Launch screen's reading bar, grown up into something that can report a fraction.
+struct ProgressTrack: View {
+    /// 0 to 1. Clamped, so a caller that overshoots can't push the fill past the end.
+    let value: Double
+    var height: CGFloat = 6
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.Border.subtle)
+                Capsule().fill(Theme.Accent.default)
+                    .frame(width: max(height, geo.size.width * min(max(value, 0), 1)))
+            }
+        }
+        .frame(height: height)
+        .animation(.easeOut(duration: 0.35), value: value)
+        .accessibilityElement()
+        .accessibilityLabel("Progress")
+        .accessibilityValue("\(Int(min(max(value, 0), 1) * 100)) percent")
     }
 }
 

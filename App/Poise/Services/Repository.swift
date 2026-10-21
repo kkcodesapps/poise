@@ -1,6 +1,9 @@
 import Foundation
+import OSLog
 import Supabase
 import PoiseKit
+
+private let log = Logger(subsystem: "com.koliokolev.poise", category: "repository")
 
 /// Reads the user's rows and maps them to the engine's models. The server is the source of truth.
 struct Repository {
@@ -22,8 +25,9 @@ struct Repository {
 
     struct Item: Sendable, Identifiable, Hashable, Codable { let id: String; let institution: String; let status: String }
 
-    /// Thirteen months: enough for Where's year view and for annual subscriptions to be seen twice.
-    func load(days: Int = 400) async throws -> Snapshot {
+    /// Five years, paged: enough for a category's history to read year against year and for annual subscriptions to repeat.
+    /// Capped at 8 000 rows by `pagedTransactions`, so a heavy feed still loads in one trip.
+    func load(days: Int = 1825) async throws -> Snapshot {
         let since = Calendar.current.date(byAdding: .day, value: -days, to: .now) ?? .now
         // Accounts first: hidden ones decide which transactions are worth fetching at all.
         async let accountRows: [AccountRow] = client.from("accounts").select().execute().value
@@ -87,13 +91,14 @@ struct Repository {
     private struct TransactionRow: Decodable {
         let id: UUID, account_id: UUID, amount: Double, merchant: String, authorized_date: String?, posted_date: String
         let pending: Bool, kind: String, category: String?, pair_id: UUID?, provider_category: String?
-        let display_name: String?, note: String?, excluded: Bool, created_at: String?, logo_url: String?
+        let display_name: String?, note: String?, excluded: Bool, created_at: String?, logo_url: String?, order_ref: String?
         var model: Transaction {
             Transaction(id: id.uuidString, accountID: account_id.uuidString, amount: Repository.decimal(amount), merchant: merchant,
                         authorizedDate: authorized_date.flatMap(Repository.day.date(from:)), date: Repository.day.date(from: posted_date) ?? .now,
                         pending: pending, kind: TransactionKind(rawValue: kind) ?? .spend, categoryID: category,
                         pairID: pair_id?.uuidString, isFee: provider_category?.hasPrefix("BANK_FEES") ?? false,
-                        displayName: display_name, note: note, excluded: excluded, createdAt: created_at.flatMap(Repository.date(from:)), logoURL: logo_url)
+                        displayName: display_name, note: note, excluded: excluded, createdAt: created_at.flatMap(Repository.date(from:)), logoURL: logo_url,
+                        orderRef: order_ref)
         }
     }
 
@@ -213,6 +218,55 @@ struct Repository {
         try await client.from("transactions").update(Patch(note: note)).eq("id", value: transactionID).execute()
     }
 
+    /// Order numbers read from a merchant the user connected, written one charge at a time.
+    ///
+    /// A row that fails takes only itself down: the first version threw on the first error and abandoned every row after
+    /// it, so a single hiccup mid-loop left most of a read unsaved and looking like a matching failure. Returns how many
+    /// were actually written.
+    @discardableResult
+    func setOrderRefs(_ refs: [String: String]) async -> Int {
+        struct Patch: Encodable { let order_ref: String? }
+        var written = 0
+        for (transactionID, ref) in refs {
+            for attempt in 0 ..< 2 {
+                do {
+                    try await client.from("transactions").update(Patch(order_ref: ref)).eq("id", value: transactionID).execute()
+                    written += 1
+                    break
+                } catch {
+                    if attempt == 1 { log.error("order ref not saved for \(transactionID, privacy: .public): \(error.localizedDescription, privacy: .public)") }
+                    else { try? await Task.sleep(for: .milliseconds(400)) }
+                }
+            }
+        }
+        return written
+    }
+
+    func clearOrderRefs() async throws {
+        struct Patch: Encodable { let order_ref: String? }
+        try await client.from("transactions").update(Patch(order_ref: nil)).not("order_ref", operator: .is, value: "null").execute()
+    }
+
+    /// What was in an order, keyed by the order number so two charges from one order share it.
+    func loadOrderItems() async throws -> [String: AmazonOrderDetail] {
+        struct Row: Decodable { let order_ref: String; let items: [AmazonItem]; let subtotal: Double?; let tax: Double?; let total: Double? }
+        let rows: [Row] = try await client.from("order_items").select().execute().value
+        return Dictionary(uniqueKeysWithValues: rows.map {
+            ($0.order_ref, AmazonOrderDetail(orderID: $0.order_ref, items: $0.items,
+                                             subtotal: $0.subtotal.map(Repository.decimal), tax: $0.tax.map(Repository.decimal),
+                                             total: $0.total.map(Repository.decimal)))
+        })
+    }
+
+    func save(_ detail: AmazonOrderDetail, userID: String) async throws {
+        struct Row: Encodable { let user_id: String; let order_ref: String; let items: [AmazonItem]; let subtotal: Double?; let tax: Double?; let total: Double? }
+        let row = Row(user_id: userID, order_ref: detail.orderID, items: detail.items,
+                      subtotal: detail.subtotal.map { NSDecimalNumber(decimal: $0).doubleValue },
+                      tax: detail.tax.map { NSDecimalNumber(decimal: $0).doubleValue },
+                      total: detail.total.map { NSDecimalNumber(decimal: $0).doubleValue })
+        try await client.from("order_items").upsert(row, onConflict: "user_id,order_ref").execute()
+    }
+
     func update(transactionID: String, excluded: Bool) async throws {
         struct Patch: Encodable { let excluded: Bool }
         try await client.from("transactions").update(Patch(excluded: excluded)).eq("id", value: transactionID).execute()
@@ -252,6 +306,7 @@ struct Repository {
         var dupMuted: [String] = []                  // merchant keys never to ask "charged twice?" about
         var cancelledStreams: [String: Date] = [:]   // "I cancelled this" — stream id → the date; a later charge is the top leak
         var streamKinds: [String: String] = [:]      // re-filed by hand — stream id → "subscription" | "bill"
+        var watchedCategories: [String] = []         // tell me when this part of life costs more than usual
     }
 
     private struct SettingsRow: Codable {
@@ -267,6 +322,7 @@ struct Repository {
         var dup_muted: [String]?
         var cancelled_streams: [String: String]?
         var stream_kinds: [String: String]?
+        var watched_categories: [String]?
     }
 
     func loadSettings() async throws -> Settings {
@@ -276,7 +332,8 @@ struct Repository {
                         committedSavings: Self.decimal(r.committed_savings), notifySpend: r.notif_prefs["spend"] ?? true,
                         notifyHeadsUp: r.notif_prefs["heads_up"] ?? true, notifyWeekly: r.notif_prefs["weekly_review"] ?? true, faceID: r.faceid, categoryLens: r.category_lens ?? [:],
                         dismissedStreams: r.dismissed_streams ?? [], dupMuted: r.dup_muted ?? [],
-                        cancelledStreams: (r.cancelled_streams ?? [:]).compactMapValues { Self.day.date(from: $0) }, streamKinds: r.stream_kinds ?? [:])
+                        cancelledStreams: (r.cancelled_streams ?? [:]).compactMapValues { Self.day.date(from: $0) }, streamKinds: r.stream_kinds ?? [:],
+                        watchedCategories: r.watched_categories ?? [])
     }
 
     func save(_ s: Settings) async throws {
@@ -284,7 +341,7 @@ struct Repository {
         let row = SettingsRow(user_id: session.user.id.uuidString, payday_override: s.paydayOverride.map(Self.day.string(from:)), pays_cc_in_full: s.paysCardsInFull,
                               kept_target: s.keptTarget, committed_savings: Double(truncating: s.committedSavings as NSDecimalNumber),
                               notif_prefs: ["spend": s.notifySpend, "heads_up": s.notifyHeadsUp, "weekly_review": s.notifyWeekly], faceid: s.faceID, category_lens: s.categoryLens, dismissed_streams: s.dismissedStreams, dup_muted: s.dupMuted,
-                              cancelled_streams: s.cancelledStreams.mapValues { Self.day.string(from: $0) }, stream_kinds: s.streamKinds)
+                              cancelled_streams: s.cancelledStreams.mapValues { Self.day.string(from: $0) }, stream_kinds: s.streamKinds, watched_categories: s.watchedCategories)
         try await client.from("settings").upsert(row, onConflict: "user_id").execute()
     }
 

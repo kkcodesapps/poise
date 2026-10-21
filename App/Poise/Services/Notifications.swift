@@ -1,3 +1,4 @@
+import BackgroundTasks
 import UIKit
 import UserNotifications
 import OSLog
@@ -10,9 +11,39 @@ private let log = Logger(subsystem: "com.koliokolev.poise", category: "push")
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     var model: AppModel?
 
+    /// Banks reach the server by webhook and Wallet by its own extension, so both arrive with the app closed. Amazon
+    /// can't: its session lives in this app's web view, so iOS has to wake us to read it.
+    static let amazonRefresh = "com.koliokolev.poise.amazon-refresh"
+
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.amazonRefresh, using: nil) { task in
+            MainActor.assumeIsolated { AppDelegate.handleAmazonRefresh(task) }
+        }
+        Self.scheduleAmazonRefresh()
         return true
+    }
+
+    /// Asks iOS for another wake in about four hours. It decides the real timing from how the app is used, so this is
+    /// a floor rather than a schedule — in practice a few times a day.
+    static func scheduleAmazonRefresh() {
+        let request = BGAppRefreshTaskRequest(identifier: amazonRefresh)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 4 * 3600)
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    /// One page of Amazon, which is a fortnight of orders — enough to catch what's new in the few seconds iOS allows.
+    @MainActor
+    private static func handleAmazonRefresh(_ task: BGTask) {
+        scheduleAmazonRefresh()                                   // queue the next one first, whatever happens here
+        guard let model = (UIApplication.shared.delegate as? AppDelegate)?.model else {
+            return task.setTaskCompleted(success: false)
+        }
+        let work = Task { @MainActor in
+            await model.syncAmazonIfDue(notBefore: 3 * 3600, maxPages: 1)
+            task.setTaskCompleted(success: true)
+        }
+        task.expirationHandler = { work.cancel() }
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
