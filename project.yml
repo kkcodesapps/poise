@@ -26,7 +26,7 @@ settings:
     DEVELOPMENT_TEAM: D6937U28B4
     CODE_SIGN_STYLE: Automatic
     SWIFT_STRICT_CONCURRENCY: complete
-    MARKETING_VERSION: "0.3.4"
+    MARKETING_VERSION: "0.8.2"
     CURRENT_PROJECT_VERSION: "1"
     TARGETED_DEVICE_FAMILY: "1"
   configs:
@@ -71,6 +71,10 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+        # Amazon's session lives in this app's web view, so its order numbers can only be read with the app awake.
+        # iOS wakes it a few times a day for a short read; banks and Wallet don't need this (webhook and extension).
+        UIBackgroundModes: [fetch]
+        BGTaskSchedulerPermittedIdentifiers: [com.koliokolev.poise.amazon-refresh]
         CFBundleURLTypes:
           - CFBundleURLName: com.koliokolev.poise
             CFBundleURLSchemes: [poise]
@@ -156,6 +160,7 @@ targets:
         CFBundleDisplayName: Poise Finance
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSFinancialDataUsageDescription: Poise keeps your Apple Card, Apple Cash and Savings up to date in the background, so a charge is counted the day you make it. It stays in your own private record and is never sold or shared.
         EXAppExtensionAttributes:
           EXExtensionPointIdentifier: com.apple.financekit.background-delivery
     entitlements:

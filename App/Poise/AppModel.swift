@@ -54,6 +54,36 @@ final class AppModel {
     var walletLinked = false
     /// Wallet access was turned off in Settings after linking; the banner sends the user back there.
     var walletAccessLost = false
+    /// Amazon, connected by signing in on this phone. The session lives in the web view; these mirror it for the views.
+    var amazonConnected = false
+    /// Amazon signed the user out — expected every few weeks, and said out loud rather than left to rot.
+    var amazonLapsed = false
+    var amazonCheckedAt: Date?
+    var amazonReading = false
+    /// How far along a read is, 0 to 1. Amazon never says how many pages it holds, so this is a curve that always
+    /// moves and never claims to be finished — it snaps to full when the read actually ends.
+    var amazonProgress: Double = 0
+    /// The oldest order reached so far, which is the honest thing to show while it walks backwards.
+    var amazonReadingBackTo: Date?
+    /// What the last read saw, whether or not any of it matched a charge.
+    /// What was in each order, by order number. Two charges from one order share a single entry.
+    var orderItems: [String: AmazonOrderDetail] = [:]
+    /// Orders currently being fetched, so a sheet can show that it's working and can't ask twice.
+    var fetchingItems: Set<String> = []
+    /// The second phase of a check: reading what was in each order. Zero when that phase isn't running.
+    var amazonItemsTotal = 0
+    var amazonItemsDone = 0
+    var amazonOrdersRead = 0
+    var amazonPagesRead = 0
+    /// The oldest order the last read reached. Short of the oldest charge means it ran out of road, not out of matches.
+    var amazonReachedBack: Date?
+    #if DEBUG
+    enum AmazonScreen { case connect, signIn, reading, connection }
+    var showAmazon: AmazonScreen?
+    #endif
+    /// How many Amazon charges carry an order number, for the screen that reports on a connection.
+    var amazonMatched: Int { raw.reduce(0) { $0 + ($1.orderRef == nil ? 0 : 1) } }
+    var amazonCharges: Int { raw.filter { $0.merchantKey.hasPrefix("amazon") && !$0.pending }.count }
     /// The first-run screens (Figma §01); nil once the user is through them or has linked something.
     enum OnboardingStep: Equatable { case welcome, link, reading, payday }
     var onboarding: OnboardingStep?
@@ -79,6 +109,8 @@ final class AppModel {
     var priceItems: [PriceItem] = []
     enum WhereMode: String, CaseIterable { case spending = "Spending", prices = "Prices" }
     var whereMode: WhereMode = .spending
+    /// The Where tab's navigation path — a category id pushes its page.
+    var wherePath: [String] = []
     /// Which chip the Prices list opens on — "up" from the Leaks tile.
     var pricesFilter = "all"
     /// The day the screens are drawn against. Relative labels ("TODAY", "yesterday") read from this, not from `Date.now`,
@@ -202,11 +234,27 @@ final class AppModel {
             await refreshPushStatus()
             if settings.faceID { isLocked = true; await unlock() }
             if walletLinked { WalletSource.setBackgroundDelivery(true); Task { if await syncWallet() { await reload() } } }
+            let amazon = AmazonSource.shared
+            amazonConnected = amazon.isConnected; amazonLapsed = amazon.hasLapsed; amazonCheckedAt = amazon.lastChecked
+            amazonOrdersRead = amazon.ordersRead; amazonPagesRead = amazon.pagesRead; amazonReachedBack = amazon.reachedBack
+            // A connected Amazon is checked on launch, at most every six hours — new charges arrive with their order.
+            Task { await syncAmazonIfDue(notBefore: 6 * 3600) }
             #if DEBUG
             // `-tab leaks|pace|next14` and `-review` open a screen on launch (screenshots, UI tests).
             let args = ProcessInfo.processInfo.arguments
             if let i = args.firstIndex(of: "-tab"), i + 1 < args.count { tab = Tab.allCases.first { $0.rawValue.lowercased().replacingOccurrences(of: " ", with: "") == args[i + 1].lowercased() } ?? .home }
             if args.contains("-review") { showReview = true }
+            // `-amazon [connect|signin|connection]` opens the Amazon screens (screenshots, checks).
+            if let i = args.firstIndex(of: "-amazon") {
+                let which = i + 1 < args.count ? args[i + 1] : "connect"
+                showAmazon = which == "connection" ? .connection : which == "signin" ? .signIn : which == "reading" ? .reading : .connect
+                if showAmazon == .reading {
+                    amazonReading = true; amazonProgress = 0.88
+                    amazonReadingBackTo = Calendar.current.date(byAdding: .day, value: -44, to: .now)
+                    amazonOrdersRead = 71; amazonPagesRead = 6
+                    amazonItemsTotal = 71; amazonItemsDone = 30
+                }
+            }
             // `-onboarding [welcome|link|reading|payday]` opens the first-run flow at a step, whatever the account looks like.
             if let i = args.firstIndex(of: "-onboarding") {
                 let step = i + 1 < args.count ? args[i + 1] : "welcome"
@@ -248,6 +296,8 @@ final class AppModel {
             // `-open-txn-item` opens the latest purchase of the first item (the sheet's price card + name suggestions).
             if args.contains("-open-txn-item"), let item = pricesMovedLately.first ?? priceItems.first, let t = transactions.first(where: { $0.id == item.purchases.last?.id }) { Task { try? await Task.sleep(for: .seconds(1)); selectedTransaction = t } }
             if args.contains("-open-item"), let item = pricesMovedLately.first ?? priceItems.first { Task { try? await Task.sleep(for: .seconds(1)); selectedPriceItem = .init(id: item.id) } }
+            // `-open-plan` opens a plan's page — the one that carries the usage strip.
+            if args.contains("-open-plan"), let item = priceItems.first(where: { $0.hasUsage }) ?? priceItems.first(where: { $0.source == .plan }) { Task { try? await Task.sleep(for: .seconds(1)); selectedPriceItem = .init(id: item.id) } }
             // `-push-provisional` registers for pushes without a prompt (quiet delivery), so the token → server → APNs chain can be checked.
             if args.contains("-push-provisional") {
                 _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.provisional, .alert, .sound])
@@ -274,6 +324,22 @@ final class AppModel {
             }
             // `-open-ccpay` opens a card payment's sheet — the row a bank may sign either way.
             if args.contains("-open-ccpay"), let t = transactions.first(where: { $0.kind == .ccPayment && $0.amount > 0 }) { Task { try? await Task.sleep(for: .seconds(1)); selectedTransaction = t } }
+            if args.contains("-seed-years") {
+                try await Backend.client.functions.invoke("financekit-sync", options: FunctionInvokeOptions(headers: ["content-type": "application/json"], body: DebugSeed.years))
+                await reload()
+            }
+            // `-open-category <id>` opens a category's page (groceries by default).
+            if args.contains("-open-category") {
+                let i = args.firstIndex(of: "-open-category")!
+                let id = i + 1 < args.count && !args[i + 1].hasPrefix("-") ? args[i + 1] : "groceries"
+                whereMode = .spending; tab = .whereTab; wherePath = [id]
+            }
+            if args.contains("-seed-store") {
+                try await Backend.client.functions.invoke("financekit-sync", options: FunctionInvokeOptions(headers: ["content-type": "application/json"], body: DebugSeed.store))
+                await reload()
+            }
+            // `-open-store` opens the merchant page of a shop with no price (the "A store, not a price" card).
+            if args.contains("-open-store"), let t = transactions.first(where: { storeShape(merchantKey: $0.merchantKey) != nil }) { Task { try? await Task.sleep(for: .seconds(1)); selectedMerchant = .init(key: t.merchantKey) } }
             if args.contains("-seed-ccpay") {
                 try await Backend.client.functions.invoke("financekit-sync", options: FunctionInvokeOptions(headers: ["content-type": "application/json"], body: DebugSeed.cardPayment))
                 await reload()
@@ -321,6 +387,7 @@ final class AppModel {
             let (s, p) = try await (snap, prefs)
             apply(s, p)
             if let id = try? await Backend.client.auth.session.user.id.uuidString { SnapshotCache.save(s, p, for: id) }
+            if let loaded = try? await repository.loadOrderItems() { orderItems = loaded }
             return true
         } catch {
             if error is CancellationError { return false }                  // the caller went away; nothing to say
@@ -366,6 +433,138 @@ final class AppModel {
             if await !wallet.isAuthorized() { walletAccessLost = true }
             return false
         }
+    }
+
+    // MARK: Amazon
+
+    /// Reads Amazon's payments page and writes every order number it can pair onto a charge.
+    ///
+    /// `deep` is the first connection, which walks back far enough to cover the history Poise already holds; a routine
+    /// check reads one page, which is about three weeks. Returns how many charges gained an order.
+    @discardableResult
+    func syncAmazon(deep: Bool = false, maxPages: Int? = nil) async -> Int {
+        guard !amazonReading else { return 0 }
+        amazonReading = true; amazonProgress = 0; amazonReadingBackTo = nil
+        defer { amazonReading = false; amazonProgress = 0; amazonReadingBackTo = nil }
+        let source = AmazonSource.shared
+        do {
+            let orders = try await source.read(back: earliest(deep: deep), maxPages: maxPages ?? (deep ? 40 : 3),
+                                               onPage: { [weak self] pages, oldest in
+                                                   self?.amazonProgress = 1 - pow(0.7, Double(pages))
+                                                   self?.amazonReadingBackTo = oldest
+                                               })
+            amazonProgress = 1
+            let paired = AmazonOrders.match(orders, to: raw)
+            let fresh = paired.filter { id, ref in raw.first { $0.id == id }?.orderRef != ref }
+            for (id, ref) in fresh { if let i = raw.firstIndex(where: { $0.id == id }) { raw[i].orderRef = ref } }
+            if !fresh.isEmpty { recompute() }
+            amazonOrdersRead = source.ordersRead; amazonPagesRead = source.pagesRead; amazonReachedBack = source.reachedBack
+            amazonConnected = true; source.isConnected = true
+            // A read can end early because Amazon asked for a fresh sign-in; keep what it got and say so.
+            amazonLapsed = source.hasLapsed; amazonCheckedAt = source.lastChecked
+            let saved = await repository.setOrderRefs(fresh)
+            // Then the second phase, with the session warm: what was in each of them. A check the user asked for reads
+            // the lot; a background wake takes a couple, because it only has seconds.
+            await fetchAllItems(limit: deep ? nil : 2)
+            return saved
+        } catch AmazonSource.Failure.signedOut {
+            amazonLapsed = true
+            return 0
+        } catch {
+            log.error("amazon read failed: \(error.localizedDescription, privacy: .public)")
+            return 0
+        }
+    }
+
+    /// How far back a read needs to go: to the oldest Amazon charge still without an order, so a connection that fell
+    /// behind catches up in one pass and a routine check stays short. A background check never looks past a month.
+    private func earliest(deep: Bool) -> Date? {
+        let month = Calendar.current.date(byAdding: .day, value: -30, to: .now)
+        guard deep else { return month }
+        let missing = raw.filter { $0.merchantKey.hasPrefix("amazon") && $0.orderRef == nil }.map(\.displayDate).min()
+        guard let missing else { return month }
+        return max(missing, Calendar.current.date(byAdding: .day, value: -400, to: .now) ?? missing)
+    }
+
+    /// What was in the order behind a charge, if it's been read.
+    func items(for t: PoiseKit.Transaction) -> AmazonOrderDetail? {
+        t.orderRef.flatMap { orderItems[$0] }
+    }
+
+    /// What a charge bought, short enough for a feed row: one name, or the first two and a count of the rest.
+    func contents(of t: PoiseKit.Transaction) -> String? {
+        guard let detail = items(for: t), !detail.items.isEmpty else { return nil }
+        let names = detail.items.map(\.shortName)
+        switch names.count {
+        case 1: return names[0]
+        case 2: return names.joined(separator: ", ")
+        default: return "\(names[0]), \(names[1]) + \(names.count - 2) more"
+        }
+    }
+
+    func fetchItems(for t: PoiseKit.Transaction) async {
+        guard let ref = t.orderRef else { return }
+        await fetchItems(ref: ref)
+    }
+
+    /// Opens one order's page and reads its contents.
+    func fetchItems(ref: String) async {
+        guard orderItems[ref] == nil, !fetchingItems.contains(ref), amazonConnected, !amazonLapsed else { return }
+        fetchingItems.insert(ref); defer { fetchingItems.remove(ref) }
+        do {
+            guard let detail = try await AmazonSource.shared.readItems(for: ref) else { return }
+            orderItems[ref] = detail
+            guard let userID = try? await Backend.client.auth.session.user.id.uuidString else { return }
+            try await repository.save(detail, userID: userID)
+        } catch AmazonSource.Failure.signedOut {
+            amazonLapsed = true
+        } catch {
+            log.error("amazon items failed for \(ref, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Reads what was in every order that hasn't been read yet, newest first.
+    ///
+    /// Amazon has no bulk view of this — it's a page load per order — so this is the slow half of a check and reports
+    /// its own progress rather than pretending to be instant. A pause between orders keeps the site from throttling.
+    /// `limit` caps it for the background wake, which only has seconds.
+    func fetchAllItems(limit: Int? = nil) async {
+        guard amazonConnected, !amazonLapsed else { return }
+        var newest: [String: Date] = [:]
+        for t in raw {
+            guard let ref = t.orderRef, orderItems[ref] == nil else { continue }
+            newest[ref] = max(newest[ref] ?? .distantPast, t.displayDate)
+        }
+        var refs = newest.keys.sorted { (newest[$0] ?? .distantPast) > (newest[$1] ?? .distantPast) }
+        if let limit { refs = Array(refs.prefix(limit)) }
+        guard !refs.isEmpty else { return }
+
+        amazonItemsTotal = refs.count; amazonItemsDone = 0
+        defer { amazonItemsTotal = 0; amazonItemsDone = 0 }
+        for ref in refs {
+            if Task.isCancelled || amazonLapsed { break }
+            await fetchItems(ref: ref)
+            amazonItemsDone += 1
+            try? await Task.sleep(for: .milliseconds(400))
+        }
+    }
+
+    /// A shallow Amazon check, skipped if one ran recently. Pull-to-refresh and the background task both come here, so
+    /// neither can hammer a page that throttles.
+    @discardableResult
+    func syncAmazonIfDue(notBefore seconds: TimeInterval, maxPages: Int? = nil) async -> Int {
+        guard amazonConnected, !amazonLapsed, !amazonReading else { return 0 }
+        if let last = amazonCheckedAt, Date.now.timeIntervalSince(last) < seconds { return 0 }
+        return await syncAmazon(maxPages: maxPages)
+    }
+
+    /// Forgets the session and every order number it found. The charges themselves are untouched.
+    func disconnectAmazon() async {
+        await AmazonSource.shared.disconnect()
+        amazonConnected = false; amazonLapsed = false; amazonCheckedAt = nil
+        for i in raw.indices where raw[i].orderRef != nil { raw[i].orderRef = nil }
+        recompute()
+        do { try await repository.clearOrderRefs() } catch { report(error) }
     }
 
     /// Everything the screens read, from a fresh load or the cache.
@@ -527,9 +726,14 @@ final class AppModel {
     /// Foreground / pull-to-refresh: fresh balances now; new bank transactions arrive by webhook and a later reload.
     /// Wallet has no webhook, so its changes are read and sent right here.
     func refresh(trigger: String = "pull") async {
+        #if DEBUG
+        // `-slow-refresh` holds a pull open the way a real sync does, so layout bugs that only appear during it show up.
+        if ProcessInfo.processInfo.arguments.contains("-slow-refresh") { try? await Task.sleep(for: .seconds(4)) }
+        #endif
         async let banks: Void = refreshBanks(trigger: trigger)
         async let walletChanged = syncWallet()
-        _ = await (banks, walletChanged)
+        async let amazon = syncAmazonIfDue(notBefore: 15 * 60)
+        _ = await (banks, walletChanged, amazon)
         await reload()
     }
 
@@ -677,6 +881,11 @@ final class AppModel {
             if let s = allStreams.first(where: { insight.id.hasPrefix("cancelled-\($0.id)-") }) { selectedStream = s } else { tab = .leaks }
         case .streamReturned:
             if let s = streams.first(where: { insight.id.hasPrefix("returned-\($0.id)-") }) { selectedStream = s } else { tab = .leaks }
+        case .categoryOver:
+            // "category-over-<id>-<year>-<month>" → the category's own page.
+            let rest = insight.id.dropFirst("category-over-".count)
+            let id = rest.split(separator: "-").dropLast(2).joined(separator: "-")
+            whereMode = .spending; tab = .whereTab; wherePath = [id]
         case .watchTriggered, .refundOverdue, .refundArrived: tab = .home; showWatching = true
         case .crunch, .statement: tab = .next14
         case .paceOverrun, .positive: tab = .pace
@@ -816,7 +1025,7 @@ final class AppModel {
         transactions.filter { $0.merchantKey == key }.sorted { $0.displayDate > $1.displayDate }
     }
 
-    struct MerchantStats: Sendable { var name: String; var symbol: String; var logoURL: String?; var count: Int; var firstSeen: Date?; var thisMonth: Decimal; var usual: Decimal?; var thisYear: Decimal; var categoryName: String; var categoryID: String? }
+    struct MerchantStats: Sendable { var name: String; var symbol: String; var logoURL: String?; var count: Int; var firstSeen: Date?; var thisMonth: Decimal; var usual: Decimal?; var perCharge: Decimal?; var thisYear: Decimal; var categoryName: String; var categoryID: String? }
     /// This month, the usual month (median of the last six full months that had a charge), the year so far.
     func stats(merchant key: String, now: Date = .now) -> MerchantStats? {
         let all = rows(merchant: key)
@@ -833,8 +1042,10 @@ final class AppModel {
         }
         let usual: Decimal? = monthly.isEmpty ? nil : monthly.sorted()[monthly.count / 2]
         let cat = categories.resolve(latest.categoryID)
-        return MerchantStats(name: latest.displayMerchant, symbol: cat.symbol, logoURL: all.first { $0.logoURL != nil }?.logoURL, count: all.count, firstSeen: all.last?.displayDate,
+        // The merchant page is the shop, not one named item bought there — Amazon stays Amazon.
+        return MerchantStats(name: latest.merchant.prettyMerchant, symbol: cat.symbol, logoURL: all.first { $0.logoURL != nil }?.logoURL, count: all.count, firstSeen: all.last?.displayDate,
                              thisMonth: spend.filter { $0.displayDate >= monthStart }.reduce(0) { $0 + $1.magnitude }.roundedToCents, usual: usual?.roundedToCents,
+                             perCharge: spend.isEmpty ? nil : spend.map(\.magnitude).sorted()[spend.count / 2].roundedToCents,
                              thisYear: spend.filter { $0.displayDate >= yearStart }.reduce(0) { $0 + $1.magnitude }.roundedToCents,
                              categoryName: latest.kind == .spend || latest.kind == .untracked ? cat.name : "—", categoryID: latest.kind == .spend ? cat.id : nil)
     }
@@ -857,6 +1068,35 @@ final class AppModel {
     /// The item a charge belongs to: its name's item when it has one, else its merchant's.
     func priceItem(for t: PoiseKit.Transaction) -> PriceItem? {
         priceItems.first { item in item.purchases.contains { $0.id == t.id } }
+    }
+
+    /// A category's run of months — every charge it ever had, not just the window in view.
+    func history(categoryID: String, now: Date = .now) -> CategoryHistory? {
+        CategoryHistoryEngine.history(categoryID: categoryID, transactions: transactions, now: now, categories: categories)
+    }
+
+    /// Categories the user asked to hear about when a month runs over.
+    func watchesCategory(_ id: String) -> Bool { settings.watchedCategories.contains(id) }
+    func setCategoryWatch(_ on: Bool, categoryID: String) async {
+        var draft = settings
+        if on { if !draft.watchedCategories.contains(categoryID) { draft.watchedCategories.append(categoryID) } }
+        else { draft.watchedCategories.removeAll { $0 == categoryID } }
+        await save(draft)
+    }
+
+    /// What a merchant looks like when it isn't an item: the spread that makes a price meaningless, and what's followed here.
+    struct StoreShape: Sendable { var count: Int; var low: Decimal; var high: Decimal; var usual: Decimal }
+    func storeShape(merchantKey: String) -> StoreShape? {
+        guard priceItems.first(where: { $0.source == .merchant && $0.merchantKey == merchantKey }) == nil else { return nil }
+        let rows = transactions.filter { ($0.kind == .spend || $0.kind == .untracked) && $0.amount < 0 && !$0.excluded && $0.merchantKey == merchantKey }
+        guard rows.count >= 3, let low = rows.map(\.magnitude).min(), let high = rows.map(\.magnitude).max(), high > low else { return nil }
+        let sorted = rows.map(\.magnitude).sorted()
+        return StoreShape(count: rows.count, low: low, high: high, usual: sorted[sorted.count / 2])
+    }
+
+    /// Items followed from this merchant — named runs whose purchases came from here.
+    func itemsFollowed(at merchantKey: String) -> [PriceItem] {
+        priceItems.filter { $0.source == .named && $0.purchases.contains { PoiseKit.Transaction.merchantKey($0.merchant) == merchantKey } }
     }
 
     /// Names already given to charges at this merchant — one tap to name the next purchase the same way.
@@ -1089,7 +1329,11 @@ final class AppModel {
         let ranked = InsightEngine.rank(.init(verdict: v, pace: p, streams: streams, transactions: rows, now: now, acknowledged: acknowledged, dupMuted: Set(settings.dupMuted)))
         let tracked = Set(watches.filter { $0.kind == .price && $0.status.isOpen }.map(\.matcher))
         priceItems = PriceTracker.items(in: all, streams: allStreams.filter { !dismissed.contains($0.id) && isPlanLike($0) }, now: now).map { var i = $0; i.tracked = tracked.contains(i.id); return i }
-        let leakInsights = Cancellations.chargedAfterCancel(streams: allStreams, cancelled: settings.cancelledStreams, transactions: rows) + Cancellations.returned(streams: streams, now: now)
+        let overspent = settings.watchedCategories.compactMap { id -> Insight? in
+            guard let h = CategoryHistoryEngine.history(categoryID: id, transactions: all, now: now, categories: categories) else { return nil }
+            return CategoryHistoryEngine.overspendInsight(categoryID: id, name: categories.resolve(id).name, history: h, now: now)
+        }
+        let leakInsights = Cancellations.chargedAfterCancel(streams: allStreams, cancelled: settings.cancelledStreams, transactions: rows) + Cancellations.returned(streams: streams, now: now) + overspent
         let watchInsights = (leakInsights + WatchEngine.insights(watches, transactions: rows, now: now) + statementInsights(now: now) + PriceTracker.insights(priceItems, now: now)).filter { !acknowledged.contains($0.id) }
         insights = (ranked + watchInsights).sorted { $0.rank < $1.rank }
         fees = Anomalies.feesYearToDate(rows, now: now)

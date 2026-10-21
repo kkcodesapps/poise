@@ -112,6 +112,37 @@ enum DebugSeed {
         return "{\"transactions\": [\(row("seed-ccpay-card", card, false)),\(row("seed-ccpay-cash", cash, true))]}"
     }
 
+    /// `-seed-store`: a shop whose baskets are all different (Amazon's real spread), so the merchant page shows
+    /// "A store, not a price" and the way out of it.
+    static var store: String {
+        let cal = Calendar.current, card = "DEB00000-0000-0000-0000-000000000001"
+        let today = cal.startOfDay(for: .now)
+        let rows = [(7.78, 3), (151.19, 12), (48.20, 24), (754.92, 40), (162.36, 55), (34.99, 70), (98.10, 84)].enumerated().map { i, r -> String in
+            let day = WalletSource.Payload.day(cal.date(byAdding: .day, value: -r.1, to: today)!)
+            return "{\"id\": \"seed-store-\(i)\", \"accountID\": \"\(card)\", \"amount\": \(r.0), \"currency\": \"USD\", \"debit\": true, \"description\": \"AMAZON.COM*\(i)K4\", \"merchant\": \"Amazon\", \"mcc\": 5942, \"type\": \"pointOfSale\", \"status\": \"booked\", \"date\": \"\(day)\", \"postedDate\": \"\(day)\"}"
+        }
+        return "{\"transactions\": [\(rows.joined(separator: ","))]}"
+    }
+
+    /// `-seed-years`: three years of groceries (one a week, bigger since last spring) so the multi-year history has
+    /// something real to draw — 12m, 2y and All all differ.
+    static var years: String {
+        let cal = Calendar.current, card = "DEB00000-0000-0000-0000-000000000001"
+        let today = cal.startOfDay(for: .now)
+        var rows: [String] = []
+        var i = 0
+        for week in stride(from: 150, through: 1, by: -1) {
+            guard let d = cal.date(byAdding: .day, value: -week * 7, to: today) else { continue }
+            // roughly $55 a week in the first two years, $115 since about 70 weeks ago
+            let base = week > 70 ? 55.0 : 115.0
+            let amount = ((base + Double((i * 37) % 23) - 11) * 100).rounded() / 100
+            let day = WalletSource.Payload.day(d)
+            rows.append("{\"id\": \"seed-year-\(i)\", \"accountID\": \"\(card)\", \"amount\": \(amount), \"currency\": \"USD\", \"debit\": true, \"description\": \"WHOLE FOODS\", \"merchant\": \"Whole Foods\", \"mcc\": 5411, \"type\": \"pointOfSale\", \"status\": \"booked\", \"date\": \"\(day)\", \"postedDate\": \"\(day)\"}")
+            i += 1
+        }
+        return "{\"transactions\": [\(rows.joined(separator: ","))]}"
+    }
+
     static let more = """
     {"transactions": [
       {"id": "seed-more-\(Int(Date.now.timeIntervalSince1970))", "accountID": "DEB00000-0000-0000-0000-000000000001", "amount": 48.10, "currency": "USD", "debit": true, "description": "Shell", "merchant": "Shell", "mcc": 5541, "type": "pointOfSale", "status": "booked", "date": "\(WalletSource.Payload.day(.now))", "postedDate": "\(WalletSource.Payload.day(.now))"}]}
