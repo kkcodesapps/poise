@@ -5,6 +5,7 @@ import PoiseKit
 struct TransactionDetailView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     let transaction: PoiseKit.Transaction
 
     @State private var kind: TransactionKind
@@ -59,6 +60,7 @@ struct TransactionDetailView: View {
                     }
                     if let why = model.insightContext, why.id.hasSuffix(transaction.id) { whyCard(why) }
                     if let item = model.priceItem(for: transaction) { priceCard(item).padding(.top, Theme.Spacing.s8) }
+                    if let ref = transaction.orderRef { orderCard(ref) }
                     SectionHeader(title: "What was this?")
                     whatSection
                     if transaction.kind == .spend || transaction.kind == .untracked {
@@ -144,6 +146,59 @@ struct TransactionDetailView: View {
             if wantMerchant, existingM == nil { await model.addWatch(Watch(kind: .merchant, transactionID: t.id, merchant: t.merchant)) }
             else if !wantMerchant, let w = existingM { await model.removeWatch(w) }
         }
+    }
+
+    /// The merchant's own order, when they've been connected. The link opens their app on that order — the thing a
+    /// bank statement can never tell you.
+    private func orderCard(_ ref: String) -> some View {
+        let detail = model.items(for: transaction)
+        return Card(padding: Theme.Spacing.s16) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
+                Text(eyebrow(detail)).font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary)
+                if let detail {
+                    ForEach(Array(detail.items.enumerated()), id: \.offset) { _, item in
+                        HStack(alignment: .top, spacing: Theme.Spacing.s12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.shortName).font(Theme.Font.body).foregroundStyle(Theme.Text.primary)
+                                if let seller = item.seller {
+                                    Text(seller).font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+                                }
+                            }
+                            Spacer(minLength: Theme.Spacing.s8)
+                            if let price = item.price {
+                                Text(price.money2).font(Theme.Font.moneyMD).foregroundStyle(Theme.Text.primary)
+                            }
+                        }
+                    }
+                    if let tax = detail.tax, tax > 0 {
+                        Divider().overlay(Theme.Border.subtle)
+                        HStack {
+                            Text("Tax").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+                            Spacer()
+                            Text(tax.money2).font(Theme.Font.captionStrong).foregroundStyle(Theme.Text.secondary)
+                        }
+                    }
+                    // An order can ship in parts, and each part is charged on its own — so the order can be worth more
+                    // than the charge in front of you. Saying so beats looking wrong.
+                    if let total = detail.total, (total - transaction.magnitude).magnitude > 0.01 {
+                        Text("The whole order came to \(total.money2); this charge is one part of it.")
+                            .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+                    }
+                } else if model.fetchingItems.contains(ref) {
+                    Text("Reading the order from Amazon…").font(Theme.Font.subhead).foregroundStyle(Theme.Text.secondary)
+                } else {
+                    Text(ref).font(Theme.Font.moneySM).foregroundStyle(Theme.Text.secondary)
+                }
+                Button("See it on Amazon") { openURL(AmazonOrders.url(for: ref)) }.buttonStyle(.secondaryCompact)
+            }
+        }
+        .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s8)
+        .task { await model.fetchItems(for: transaction) }
+    }
+
+    private func eyebrow(_ detail: AmazonOrderDetail?) -> String {
+        guard let detail, !detail.items.isEmpty else { return "ORDER" }
+        return detail.items.count == 1 ? "ORDER" : "ORDER · \(detail.items.count) ITEMS"
     }
 
     /// A name — for this charge, or for every charge from the merchant — and a note for one-offs.

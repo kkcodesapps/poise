@@ -29,6 +29,16 @@ struct RootView: View {
         .sheet(isPresented: $model.showWidgetPreview) { WidgetPreviewSheet() }
         #endif
         .sheet(isPresented: $model.showProfile) { ProfileView() }
+        #if DEBUG
+        .sheet(item: Binding(get: { model.showAmazon.map { AmazonRoute(screen: $0) } }, set: { model.showAmazon = $0?.screen })) { route in
+            switch route.screen {
+            case .connect: AmazonConnectView()
+            case .signIn: AmazonConnectView(startSignedOut: true)
+            case .reading: AmazonConnectView(startReading: true)
+            case .connection: NavigationStack { AmazonConnectionView() }
+            }
+        }
+        #endif
         .fullScreenCover(isPresented: $model.showReview) { WeeklyReviewView() }
         .overlay { if model.onboarding != nil { OnboardingView().transition(.opacity) } }
         .overlay { if model.isLocked { LockScreen() } }
@@ -65,3 +75,11 @@ struct LockScreen: View {
         .ignoresSafeArea()
     }
 }
+
+#if DEBUG
+/// Lets `-amazon` drive the sheet from a launch argument.
+private struct AmazonRoute: Identifiable {
+    let screen: AppModel.AmazonScreen
+    var id: String { "\(screen)" }
+}
+#endif

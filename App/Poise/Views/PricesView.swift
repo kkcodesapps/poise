@@ -7,18 +7,18 @@ struct PricesList: View {
     @Environment(AppModel.self) private var model
     @State private var filter = "all"
     @State private var query = ""
+    @State private var showSteady = false
     @State private var selected: AppModel.PriceItemRef?
 
-    private var tracked: [PriceItem] { model.priceItems.filter { $0.tracked && passes($0) }.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending } }
-    private var moved: [PriceItem] { model.pricesMovedLately.filter { !$0.tracked && passes($0) } }
-    private var rest: [PriceItem] { model.pricesRest.filter { !$0.tracked && passes($0) } }
+    private var changed: [PriceItem] { model.pricesMovedLately.filter { !$0.tracked && passes($0) } }
+    private var watching: [PriceItem] { model.priceItems.filter { $0.tracked && passes($0) }.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending } }
+    private var steady: [PriceItem] { model.pricesRest.filter { !$0.tracked && passes($0) } }
     private func passes(_ i: PriceItem) -> Bool {
         let q = query.trimmingCharacters(in: .whitespaces)
         if !q.isEmpty, !i.displayName.localizedCaseInsensitiveContains(q), !i.merchant.prettyMerchant.localizedCaseInsensitiveContains(q) { return false }
         switch filter {
-        case "tracked": return i.tracked
-        case "up": return i.direction == .up
-        case "down": return i.direction == .down
+        case "watching": return i.tracked
+        case "changed": return i.direction != .steady
         case "plans": return i.source == .plan
         default: return true
         }
@@ -28,42 +28,68 @@ struct PricesList: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.Text.tertiary)
-                TextField("Anything you buy again", text: $query).font(Theme.Font.body).foregroundStyle(Theme.Text.primary).autocorrectionDisabled()
+                TextField("Anything with a price", text: $query).font(Theme.Font.body).foregroundStyle(Theme.Text.primary).autocorrectionDisabled()
                 if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.Text.tertiary) }.buttonStyle(.plain) }
             }
             .padding(.horizontal, 12).frame(height: 40).background(Theme.Bg.inset, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
             .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach([("all", "All · \(model.priceItems.count)"), ("tracked", "Tracked · \(model.priceItems.filter(\.tracked).count)"), ("up", "Up"), ("down", "Down"), ("plans", "Plans")], id: \.0) { key, label in
-                        Chip(label: label, symbol: key == "up" ? "arrow.up.right" : key == "down" ? "arrow.down.right" : key == "tracked" ? "eye" : key == "plans" ? "arrow.clockwise" : "line.3.horizontal.decrease", on: filter == key) { withAnimation(.snappy) { filter = key } }
+                    ForEach(chips, id: \.0) { key, label, symbol in
+                        Chip(label: label, symbol: symbol, on: filter == key) { withAnimation(.snappy) { filter = key } }
                     }
                 }
                 .padding(.horizontal, Theme.Spacing.s16)
             }
             .padding(.top, Theme.Spacing.s12)
-            if tracked.isEmpty, moved.isEmpty, rest.isEmpty {
-                Card { EmptyStateView(symbol: "chart.line.uptrend.xyaxis", title: filter == "all" && query.isEmpty ? "Nothing to compare yet" : "Nothing here", body: filter == "all" && query.isEmpty ? "Poise needs two purchases of the same thing. Name a charge to follow one item from a store that sells everything." : "Try another filter or search.") }
+            if changed.isEmpty, watching.isEmpty, steady.isEmpty {
+                Card { EmptyStateView(symbol: "chart.line.uptrend.xyaxis", title: filter == "all" && query.isEmpty ? "Nothing with a price yet" : "Nothing here", body: filter == "all" && query.isEmpty ? "Poise needs two charges at about the same price — a plan, or something you’ve named. Open a store you use and follow one item from there." : "Try another filter or search.") }
                     .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s16)
             }
-            if !tracked.isEmpty {
-                SectionHeader(title: "Tracked · \(tracked.count)")
-                list(tracked)
+            if !changed.isEmpty {
+                SectionHeader(title: "Changed lately · \(changed.count)")
+                list(changed)
             }
-            if !moved.isEmpty {
-                SectionHeader(title: "Moved lately")
-                list(moved)
+            if !watching.isEmpty {
+                SectionHeader(title: "Watching · \(watching.count)")
+                list(watching)
             }
-            if !rest.isEmpty {
-                SectionHeader(title: "Everything · \(rest.count)")
-                list(rest)
+            if !steady.isEmpty {
+                SectionHeader(title: "Steady · \(steady.count)")
+                if showSteady {
+                    list(steady)
+                    Button("Hide the steady ones") { withAnimation(.snappy) { showSteady = false } }.buttonStyle(.ghost).padding(.top, Theme.Spacing.s4)
+                } else {
+                    Card {
+                        Button { withAnimation(.snappy) { showSteady = true } } label: {
+                            HStack(spacing: Theme.Spacing.s12) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(steady.count) haven’t moved").font(Theme.Font.headline).foregroundStyle(Theme.Text.primary)
+                                    Text(steady.prefix(6).map(\.displayName).joined(separator: ", ")).font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
+                                }
+                                Spacer(minLength: 8)
+                                Image(systemName: "chevron.down").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.Text.tertiary)
+                            }
+                            .padding(.vertical, 14).padding(.horizontal, Theme.Spacing.s16).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, Theme.Spacing.s16)
+                }
             }
-            Text("Everything you’ve bought twice or more. Things that cost about the same get a usual price and a heads-up when it moves; things that vary — groceries, gas, usage — show their range. Name a charge to follow one thing from a store that sells everything.")
+            Text("Only things with a price live here: a plan’s own charge, anything you’ve named, and places that charge the same every time. Amazon, Instacart and the rest are stores — their totals are in Spending.")
                 .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
         }
         .sheet(item: $selected) { ref in PriceItemView(itemID: ref.id) }
         .onAppear { if model.pricesFilter != "all" { filter = model.pricesFilter; model.pricesFilter = "all" } }
         .onChange(of: model.pricesFilter) { _, f in if f != "all" { filter = f; model.pricesFilter = "all" } }
+    }
+
+    private var chips: [(String, String, String)] {
+        [("all", "All · \(model.priceItems.count)", "line.3.horizontal.decrease"),
+         ("watching", "Watching · \(model.priceItems.filter(\.tracked).count)", "eye"),
+         ("changed", "Changed", "arrow.up.right"),
+         ("plans", "Plans · \(model.priceItems.filter { $0.source == .plan }.count)", "arrow.clockwise")]
     }
 
     private func list(_ items: [PriceItem]) -> some View {
@@ -83,8 +109,8 @@ struct PriceItemRow: View {
     let item: PriceItem
     /// A plan says its rhythm ("Monthly · usually $200.00"); everything else, how often and the usual or the range.
     private var subtitle: String {
-        if item.source == .plan, let s = item.streamID.flatMap({ id in model.allStreams.first { $0.id == id } }) { return "\(s.cadence.label.capitalized) · usually \(item.usual.money2)" }
-        return item.subtitle
+        guard item.source == .plan, let s = item.streamID.flatMap({ id in model.allStreams.first { $0.id == id } }) else { return item.subtitle }
+        return "\(s.cadence.label.capitalized) · usually \(item.usual.money2)" + (item.hasUsage ? " · + usage" : "")
     }
 
     var body: some View {
@@ -111,10 +137,7 @@ struct PriceItemRow: View {
 extension PriceItem {
     var displayName: String { source == .named ? name : name.prettyMerchant }
     /// PLAN on a subscription's own run, USAGE on what sits on top of it — labels, never part of the name.
-    var tag: (label: String, tone: Tag.Tone)? {
-        if source == .plan { return ("plan", .accent) }
-        return planSuffix == "usage" ? ("usage", .neutral) : nil
-    }
+    var tag: (label: String, tone: Tag.Tone)? { source == .plan ? ("plan", .accent) : nil }
     var tone: Color { direction == .up ? Theme.Status.track : direction == .down ? Theme.Status.good : Theme.Text.tertiary }
     /// "▲ $5.00 · 17%", "▼ $6.30 · 12%", "steady", or "varies" for a run with no usual price.
     var deltaLabel: String {
@@ -128,8 +151,7 @@ extension PriceItem {
     var subtitle: String {
         let lead = source == .named ? "\(merchant.prettyMerchant) · " : ""
         if source == .plan { return "\(lead)Plan · usually \(usual.money2)" }
-        if steady { return "\(lead)\(count)× · usually \(usual.money2)" }
-        return "\(lead)\(count)× · \(lowest.money) – \(highest.money)\(planSuffix == "usage" ? " · pay-as-you-go" : " per visit")"
+        return "\(lead)\(count) bought · usually \(usual.money2)"
     }
 }
 
@@ -162,6 +184,7 @@ struct PriceItemView: View {
     @State private var renaming = false
     @State private var newName = ""
     @State private var filing = false
+    @State private var showAll = false
 
     private var item: PriceItem? { model.priceItem(id: itemID) }
     private var sample: PoiseKit.Transaction? { item?.purchases.last.flatMap { p in model.transactions.first { $0.id == p.id } } }
@@ -175,7 +198,7 @@ struct PriceItemView: View {
                             MerchantCircle(logoURL: item.logoURL, symbol: model.categories.symbol(item.categoryID), size: 64)
                             Text(item.displayName).font(Theme.Font.titleMD).foregroundStyle(Theme.Text.primary).multilineTextAlignment(.center).padding(.top, 4)
                             if let tag = item.tag { Tag(label: tag.label, tone: tag.tone) }
-                            Text("\(model.categories.resolve(item.categoryID).name)\(item.source == .named ? " · \(item.merchant.prettyMerchant)" : "") · \(item.count) \(item.source == .plan ? "charge" : "purchase")\(item.count == 1 ? "" : "s") since \(item.firstSeen.formatted(.dateTime.month(.abbreviated).year()))")
+                            Text("\(model.categories.resolve(item.categoryID).name)\(item.source == .named ? " · \(item.merchant.prettyMerchant)" : "") · \(item.source == .plan ? "\(model.allStreams.first { $0.id == item.streamID }?.cadence.label ?? "recurring") since" : "\(item.count) purchase\(item.count == 1 ? "" : "s") since") \(item.firstSeen.formatted(.dateTime.month(.abbreviated)))")
                                 .font(Theme.Font.subhead).foregroundStyle(Theme.Text.secondary).multilineTextAlignment(.center)
                         }
                         .frame(maxWidth: .infinity).padding(.top, Theme.Spacing.s12).padding(.bottom, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
@@ -186,14 +209,21 @@ struct PriceItemView: View {
                         }
                         .padding(.horizontal, Theme.Spacing.s16)
                         PriceChart(item: item).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
+                        if item.hasUsage { UsageStrip(item: item).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12) }
                         if item.direction != .steady { callout(item).padding(.top, Theme.Spacing.s12) }
 
                         SectionHeader(title: "\(item.source == .plan ? "Plan charges" : "Purchases") · \(item.count)")
                         Card {
-                            let rows = item.purchases.reversed().compactMap { p in model.transactions.first { $0.id == p.id } }
+                            let all = item.purchases.reversed().compactMap { p in model.transactions.first { $0.id == p.id } }
+                            let rows = showAll ? all : Array(all.prefix(3))
                             ForEach(Array(rows.enumerated()), id: \.element.id) { i, t in
                                 Button { selected = t } label: { TransactionRowView(transaction: t, account: model.accounts.first { $0.id == t.accountID }, showsDate: true) }.buttonStyle(.plain)
                                 if i < rows.count - 1 { RowDivider() }
+                            }
+                            if all.count > 3 {
+                                RowDivider()
+                                Button(showAll ? "Show fewer" : "See all \(all.count) \(item.source == .plan ? "plan charges" : "purchases")") { withAnimation(.snappy) { showAll.toggle() } }
+                                    .font(Theme.Font.subheadStrong).foregroundStyle(Theme.Accent.default).frame(maxWidth: .infinity).padding(.vertical, 14)
                             }
                         }
                         .padding(.horizontal, Theme.Spacing.s16)
@@ -281,9 +311,9 @@ struct PriceChart: View {
         let span = max(end.timeIntervalSince(start), 86_400 * 30)
         return VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
             HStack {
-                Text("PRICE PAID").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary)
+                Text(item.source == .plan ? "PLAN PRICE" : "PRICE PAID").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary)
                 Spacer()
-                Text("\(start.formatted(.dateTime.month(.abbreviated)))\(Calendar.current.isDate(start, equalTo: end, toGranularity: .month) ? "" : " – \(end.formatted(.dateTime.month(.abbreviated)))") · \(item.count) purchase\(item.count == 1 ? "" : "s")").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+                Text("\(start.formatted(.dateTime.month(.abbreviated)))\(Calendar.current.isDate(start, equalTo: end, toGranularity: .month) ? "" : " – \(end.formatted(.dateTime.month(.abbreviated)))") · \(item.count) \(item.source == .plan ? "charge" : "purchase")\(item.count == 1 ? "" : "s")").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
             }
             GeometryReader { geo in
                 let labelW: CGFloat = 34, top: CGFloat = 14, bottom = geo.size.height - 20
@@ -308,7 +338,8 @@ struct PriceChart: View {
                         }
                         .stroke(Theme.Accent.default, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     }
-                    let lowIndex = points.firstIndex { $0.price == item.lowest }
+                    // A flat run has no "lowest" worth marking — every price is the low.
+                    let lowIndex = item.lowest == item.highest ? nil : points.firstIndex { $0.price == item.lowest }
                     ForEach(Array(points.enumerated()), id: \.element.id) { i, pt in
                         let last = i == points.count - 1, low = i == lowIndex && !last
                         let c = CGPoint(x: x(pt.date), y: y(NSDecimalNumber(decimal: pt.price).doubleValue))
@@ -345,5 +376,55 @@ struct PriceChart: View {
         while d <= to { out.append(d); d = cal.date(byAdding: .month, value: 1, to: d) ?? to.addingTimeInterval(1) }
         let step = max(1, Int(ceil(Double(out.count) / 8)))
         return out.enumerated().filter { $0.offset % step == 0 }.map(\.element)
+    }
+}
+
+
+/// A plan's pay-as-you-go, under the plan's own chart: what it came to each month, and what that means.
+struct UsageStrip: View {
+    let item: PriceItem
+    private var months: [(Date, Decimal)] {
+        let cal = Calendar.current
+        let start = cal.date(byAdding: .month, value: -5, to: cal.startOfDay(for: .now)) ?? .now
+        return (0..<6).compactMap { i in
+            guard let d = cal.date(byAdding: .month, value: i, to: start), let m = cal.dateInterval(of: .month, for: d) else { return nil }
+            return (m.start, item.usage(in: m))
+        }
+    }
+    var body: some View {
+        let ms = months
+        let peak = ms.map(\.1).max() ?? 1
+        let thisMonth = ms.last?.1 ?? 0, lastMonth = ms.count > 1 ? ms[ms.count - 2].1 : 0
+        let count = Calendar.current.dateInterval(of: .month, for: .now).map { m in item.usage.filter { m.holds($0.date) }.count } ?? 0
+        return VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
+            HStack {
+                HStack(spacing: 6) {
+                    Text("PLUS USAGE").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary).fixedSize()
+                    Tag(label: "pay as you go")
+                }
+                Spacer(minLength: 8)
+                Text("\(thisMonth.money2) this month").font(Theme.Font.caption).foregroundStyle(Theme.Text.secondary)
+            }
+            HStack(alignment: .bottom, spacing: 6) {
+                ForEach(ms, id: \.0) { month, total in
+                    let last = month == ms.last?.0
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(last ? Theme.Accent.default : Theme.Border.strong)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: max(4, 44 * CGFloat(truncating: (peak > 0 ? total / peak : 0) as NSDecimalNumber)))
+                }
+            }
+            .frame(height: 44, alignment: .bottom)
+            HStack {
+                ForEach(ms, id: \.0) { month, _ in
+                    Text(month.formatted(.dateTime.month(.abbreviated))).font(Theme.Font.caption2).foregroundStyle(Theme.Text.tertiary).frame(maxWidth: .infinity)
+                }
+            }
+            Text("\(count) charge\(count == 1 ? "" : "s") on top of the plan this month · \(lastMonth.money2) last month. Counted as spending, never as the subscription.")
+                .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+        }
+        .padding(Theme.Spacing.s16)
+        .background(Theme.Bg.elevated, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous).strokeBorder(Theme.Border.subtle))
     }
 }

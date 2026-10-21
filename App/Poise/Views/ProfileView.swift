@@ -54,6 +54,8 @@ struct ProfileView: View {
                             dismiss(); model.showReview = true
                         }
                         .disabled(model.reviewCards.isEmpty)
+                        RowDivider()
+                        NavigationLink(value: "amazon") { NavRowLabel(symbol: "shippingbox", label: "Amazon", value: amazonValue) }.buttonStyle(.plain)
                     }
                     .padding(.horizontal, Theme.Spacing.s16)
                     SectionHeader(title: "Privacy & data")
@@ -67,12 +69,20 @@ struct ProfileView: View {
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: String.self) { route in
                 if route == "categories" { CategoriesView() }
+                else if route == "amazon" { AmazonConnectionView() }
                 else if route == "hidden" { HiddenAccountsView() }
                 else if route.hasPrefix("account:") { AccountView(accountID: String(route.dropFirst("account:".count))) }
                 else { WatchingView() }
             }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.fontWeight(.semibold).tint(Theme.Accent.default) } }
         }
+    }
+
+    /// The connection says what it is on the row itself, so a lapsed sign-in doesn't hide behind a tap.
+    private var amazonValue: String {
+        if model.amazonLapsed { return "Signed out" }
+        if model.amazonConnected { return "\(model.amazonMatched) orders" }
+        return "Not connected"
     }
 }
 
