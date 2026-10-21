@@ -70,6 +70,25 @@ struct PaceAndInsightTests {
         #expect(sep25.balanceAfter == Fix.money("-607.40"))                                                                          // the statement does too
     }
 
+    @Test func aPendingCardPaymentReadsAsMoneyLeaving() {
+        // Robinhood signs the payment positive on the card; the same movement leaves checking. One line, negative, no payday.
+        let today = Fix.day(2026, 9, 22)
+        var card = Fix.card, chk = Fix.checking
+        let onCard = Transaction(id: "p-card", accountID: card.id, amount: Fix.money("2956.87"), merchant: "Payment", date: today, pending: true, kind: .ccPayment, pairID: "pay1")
+        let fromCash = Transaction(id: "p-cash", accountID: chk.id, amount: Fix.money("-2956.87"), merchant: "Payment", date: today, pending: true, kind: .ccPayment, pairID: "pay1")
+        let days = CashflowEngine.nextDays(accounts: [chk, card], streams: [], transactions: [onCard, fromCash], now: today, calendar: Fix.calendar)
+        let first = days[0]
+        #expect(first.lines.count == 1 && first.lines[0].amount == Fix.money("-2956.87") && !first.hasIncome)
+        // The same pair without the provider linking them: matched on the amount and the day instead.
+        var loose = onCard; loose.pairID = nil
+        var looseCash = fromCash; looseCash.pairID = nil
+        let unpaired = CashflowEngine.nextDays(accounts: [chk, card], streams: [], transactions: [loose, looseCash], now: today, calendar: Fix.calendar)
+        #expect(unpaired[0].lines.map(\.amount) == [Fix.money("-2956.87")])
+        // A card with no linked checking still reads as money out, not in.
+        let alone = CashflowEngine.nextDays(accounts: [card], streams: [], transactions: [onCard], now: today, calendar: Fix.calendar)
+        #expect(alone[0].lines.map(\.amount) == [Fix.money("-2956.87")] && !alone[0].hasIncome)
+    }
+
     @Test func appleCardStatementIsRebuiltFromPostedRows() {
         // Due Sep 30 → the August cycle. Charges add, the refund subtracts, the Aug 27 payment is before the close (it paid
         // July's statement), pending rows don't count yet, and September's charges belong to the next statement.

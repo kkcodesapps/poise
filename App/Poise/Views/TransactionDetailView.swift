@@ -249,7 +249,7 @@ struct TransactionDetailView: View {
             MerchantCircle(logoURL: isSpendLike ? transaction.logoURL : nil, symbol: isSpendLike ? model.categories.symbol(categoryID) : kind == .income ? "arrow.down.left" : kind == .ccPayment ? "creditcard" : "arrow.left.arrow.right",
                            size: 64, fill: Theme.Bg.subtle, color: Theme.Text.primary, dashed: transaction.pending)
                 .padding(.bottom, 8)
-            Text((transaction.amount > 0 ? "+" : "") + transaction.amount.money2).font(Theme.Font.moneyXL).foregroundStyle(transaction.amount > 0 ? Theme.Money.in : Theme.Text.primary)
+            Text(transaction.signedAmount).font(Theme.Font.moneyXL).foregroundStyle(transaction.readsAsIncome ? Theme.Money.in : Theme.Text.primary)
             Text(transaction.pending ? "Pending · authorized \(transaction.displayDate.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))"
                  : transaction.displayDate.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
                 .font(Theme.Font.subhead).foregroundStyle(Theme.Text.secondary)

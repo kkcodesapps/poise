@@ -41,9 +41,17 @@ public enum CashflowEngine {
                 byDay[day, default: []].append(.init(name: s.merchant, amount: s.kind == .income ? s.amount : -s.amount, viaCard: via))
             }
         }
-        // Today shows what's pending (already reflected in available balance, so not subtracted again).
-        let pendingToday = transactions.filter { $0.pending && calendar.isDate($0.displayDate, inSameDayAs: today) }
-            .map { CashflowDay.Line(name: $0.merchant + " (pending)", amount: $0.amount) }
+        // Today shows what's pending (already reflected in available balance, so not subtracted again). A card payment
+        // is money leaving whatever it was paid from, never income — some banks sign it positive on the card — and the
+        // pair is one movement, so only the side that actually moves cash is listed.
+        let creditIDs = Set(accounts.filter { $0.role == .credit }.map(\.id))
+        let todaysPending = transactions.filter { $0.pending && calendar.isDate($0.displayDate, inSameDayAs: today) }
+        let cashSides = todaysPending.filter { $0.kind == .ccPayment && !creditIDs.contains($0.accountID) }
+        let cashPairs = Set(cashSides.compactMap(\.pairID)), cashAmounts = Set(cashSides.map(\.magnitude))
+        let pendingToday = todaysPending
+            // The card's copy of a payment that also left a spending account — same pair, or the same amount the same day.
+            .filter { !($0.kind == .ccPayment && creditIDs.contains($0.accountID) && ($0.pairID.map(cashPairs.contains) == true || cashAmounts.contains($0.magnitude))) }
+            .map { CashflowDay.Line(name: $0.merchant + " (pending)", amount: $0.kind == .ccPayment ? -$0.magnitude : $0.amount) }
         var out: [CashflowDay] = []
         var day = today
         while day <= end {
