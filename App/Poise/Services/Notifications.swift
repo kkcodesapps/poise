@@ -17,7 +17,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.amazonRefresh, using: nil) { task in
+        // On the main queue deliberately: the handler touches the model and the web view, both main-actor bound. Passing
+        // nil here hands the launch handler a background queue, and assuming main-actor isolation on it traps — which
+        // crashed the app every time iOS ran the background refresh.
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.amazonRefresh, using: .main) { task in
             MainActor.assumeIsolated { AppDelegate.handleAmazonRefresh(task) }
         }
         Self.scheduleAmazonRefresh()

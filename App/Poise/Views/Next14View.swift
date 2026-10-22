@@ -13,9 +13,32 @@ struct Next14View: View {
             ScrollView {
                 VStack(spacing: 0) {
                     if !model.looksLinked || model.cashflow.isEmpty {
-                        EmptyStateView(symbol: "calendar", title: "The next two weeks show up here", body: "Link a bank and Poise will lay out what's due against what you have.")
+                        EmptyStateView(symbol: "calendar", title: "What's coming shows up here", body: "Link a bank and Poise will lay out what's due against what you have.")
                     } else {
-                        // The headline comes from the same fourteen days as the chart and the list, so they never disagree.
+                        HorizonSwitch(days: Binding(get: { model.horizonDays }, set: { model.horizonDays = $0 }))
+                            .padding(.horizontal, Theme.Spacing.s16).padding(.bottom, Theme.Spacing.s12)
+                        // A card whose due date Poise can't see is money missing from every number on this screen.
+                        // Saying so beats a forecast that looks fine and isn't.
+                        ForEach(model.statementConsentNeeded) { item in
+                            Button { Task { await model.grantStatementAccess(item) } } label: {
+                                HStack(spacing: Theme.Spacing.s12) {
+                                    Image(systemName: "creditcard").font(.system(size: 17, weight: .medium)).foregroundStyle(Theme.Status.track)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("\(item.institution) card payments aren't counted here")
+                                            .font(Theme.Font.subheadStrong).foregroundStyle(Theme.Text.primary)
+                                        Text(missingCardsLine(item))
+                                            .font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
+                                    }
+                                    Spacer(minLength: 8)
+                                    Text("Allow").font(Theme.Font.subheadStrong).foregroundStyle(Theme.Accent.default)
+                                }
+                                .padding(Theme.Spacing.s12).padding(.horizontal, 4)
+                                .background(Theme.Status.trackBg, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, Theme.Spacing.s16).padding(.bottom, Theme.Spacing.s12)
+                        }
+                        // The headline comes from the same days as the chart and the list, so they never disagree.
                         if let short = model.cashflow.first(where: \.isCrunch) {
                             let day = short.date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
                             let low = model.cashflow.map(\.balanceAfter).min() ?? short.balanceAfter
@@ -47,7 +70,7 @@ struct Next14View: View {
             }
             .onChange(of: selectedDay) { _, day in if let day { withAnimation(.snappy) { proxy.scrollTo(day, anchor: .center) } } }
             .background(Theme.Bg.base)
-            .navigationTitle("Next 14 days")
+            .navigationTitle("Next \(model.horizonDays) days")
             }
         }
     }
@@ -66,7 +89,8 @@ struct Next14View: View {
         }
         let selected = selectedDay.flatMap { d in model.cashflow.first { $0.id == d } }
         return Card(padding: Theme.Spacing.s16) {
-            HStack(alignment: .bottom, spacing: 6) {
+            // Thirty bars in the same card need thinner gaps, or the gaps take more room than the bars.
+            HStack(alignment: .bottom, spacing: model.cashflow.count > 20 ? 2 : 6) {
                 ForEach(model.cashflow) { day in
                     let on = selectedDay == day.id
                     Button { withAnimation(.snappy) { selectedDay = on ? nil : day.id } } label: {
@@ -130,5 +154,39 @@ struct Next14View: View {
         .background(selectedDay == day.id ? Theme.Accent.subtle : day.isCrunch ? Theme.Status.headsBg : .clear)
         .contentShape(Rectangle())
         .onTapGesture { withAnimation(.snappy) { selectedDay = selectedDay == day.id ? nil : day.id } }
+    }
+}
+
+
+extension Next14View {
+    /// What this bank's missing permission is actually costing the forecast, in money rather than jargon.
+    func missingCardsLine(_ item: Repository.Item) -> String {
+        let cards = model.accounts.filter { $0.role == .credit && $0.institution == item.institution && $0.statementDue == nil }
+        let owed = cards.reduce(Decimal(0)) { $0 + max(0, -$1.balance) }
+        guard owed > 0 else { return "Allow Poise to see when the statement is due." }
+        return "\(owed.money) owed with no due date Poise can see. Allow it and the payment lands in the forecast."
+    }
+}
+
+/// Fourteen days or thirty. Sits above the chart rather than in Settings, because it's a way of looking rather than a
+/// preference to set once — and the choice is remembered.
+struct HorizonSwitch: View {
+    @Binding var days: Int
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach([14, 30], id: \.self) { d in
+                let on = d == days
+                Button { withAnimation(.snappy) { days = d } } label: {
+                    Text("Next \(d) days").font(Theme.Font.subheadStrong).foregroundStyle(on ? Theme.Text.primary : Theme.Text.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 30)
+                        .background(on ? Theme.Bg.elevated : .clear, in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
+                        .shadow(color: on ? .black.opacity(0.12) : .clear, radius: 4, y: 1)
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(on ? [.isSelected] : [])
+            }
+        }
+        .padding(3)
+        .background(Theme.Bg.subtle, in: RoundedRectangle(cornerRadius: Theme.Radius.md, style: .continuous))
     }
 }

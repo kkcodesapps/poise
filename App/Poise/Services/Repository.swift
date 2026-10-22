@@ -18,12 +18,21 @@ struct Repository {
         var lastSync: Date?
         var institutions: [String]
         var relinkNeeded: [Item]
+        /// Banks that hold cards whose due dates we were never given permission to read.
+        var statementConsentNeeded: [Item] = []
         var walletLinked: Bool
         var customCategories: [PoiseKit.Category]
         var watches: [Watch]
     }
 
-    struct Item: Sendable, Identifiable, Hashable, Codable { let id: String; let institution: String; let status: String }
+    struct Item: Sendable, Identifiable, Hashable, Codable {
+        let id: String; let institution: String; let status: String
+        /// Why this bank isn't giving us card due dates, when it isn't. "ADDITIONAL_CONSENT_REQUIRED" is the one the
+        /// user can fix: the product was never granted at link time, and a trip back through Link grants it.
+        var liabilitiesStatus: String?
+        /// True when this bank has cards whose payments are missing from Next, and reconnecting would bring them in.
+        var needsStatementConsent: Bool { liabilitiesStatus == "ADDITIONAL_CONSENT_REQUIRED" }
+    }
 
     /// Five years, paged: enough for a category's history to read year against year and for annual subscriptions to repeat.
     /// Capped at 8 000 rows by `pagedTransactions`, so a heavy feed still loads in one trip.
@@ -31,7 +40,7 @@ struct Repository {
         let since = Calendar.current.date(byAdding: .day, value: -days, to: .now) ?? .now
         // Accounts first: hidden ones decide which transactions are worth fetching at all.
         async let accountRows: [AccountRow] = client.from("accounts").select().execute().value
-        async let itemRows: [ItemRow] = client.from("items").select("id, provider, status, last_synced_at, institution_name").execute().value
+        async let itemRows: [ItemRow] = client.from("items").select("id, provider, status, last_synced_at, institution_name, liabilities_status").execute().value
         let (a, items) = try await (accountRows, itemRows)
         let institution = Dictionary(uniqueKeysWithValues: items.map { ($0.id.uuidString, $0.institution_name) })
         let all = a.map { $0.model(institution: institution[$0.item_id.uuidString] ?? nil) }
@@ -50,7 +59,10 @@ struct Repository {
         let transactions = t.map { row -> Transaction in var m = row.model; if m.displayName == nil { m.displayName = nameFor[m.merchantKey] }; return m }
         return Snapshot(accounts: all.filter { !$0.hidden }, hiddenAccounts: hidden, transactions: transactions, streams: s.map(\.model), lastSync: lastSync,
                         institutions: Array(Set(items.compactMap(\.institution_name))).sorted(),
-                        relinkNeeded: items.filter { $0.status == "relink" }.map { Item(id: $0.id.uuidString, institution: $0.institution_name ?? "A bank", status: $0.status) },
+                        relinkNeeded: items.filter { $0.status == "relink" }.map { Item(id: $0.id.uuidString, institution: $0.institution_name ?? "A bank", status: $0.status, liabilitiesStatus: $0.liabilities_status) },
+                        statementConsentNeeded: items
+                            .filter { $0.status != "relink" && $0.liabilities_status == "ADDITIONAL_CONSENT_REQUIRED" }
+                            .map { Item(id: $0.id.uuidString, institution: $0.institution_name ?? "A bank", status: $0.status, liabilitiesStatus: $0.liabilities_status) },
                         walletLinked: items.contains { $0.provider == "financekit" },
                         customCategories: cats.map(\.model), watches: ws.map(\.model))
     }
@@ -111,7 +123,7 @@ struct Repository {
         }
     }
 
-    private struct ItemRow: Decodable { let id: UUID, provider: String, status: String, last_synced_at: String?, institution_name: String? }
+    private struct ItemRow: Decodable { let id: UUID, provider: String, status: String, last_synced_at: String?, institution_name: String?, liabilities_status: String? }
 
     private struct CategoryRow: Codable {
         var id: UUID?, user_id: String?, name: String, symbol: String, lens: String, sort: Int
@@ -249,21 +261,25 @@ struct Repository {
 
     /// What was in an order, keyed by the order number so two charges from one order share it.
     func loadOrderItems() async throws -> [String: AmazonOrderDetail] {
-        struct Row: Decodable { let order_ref: String; let items: [AmazonItem]; let subtotal: Double?; let tax: Double?; let total: Double? }
+        struct Row: Decodable { let order_ref: String; let items: [AmazonItem]; let subtotal: Double?; let tax: Double?; let total: Double?; let placed_at: String?; let return_status: String?; let return_note: String? }
         let rows: [Row] = try await client.from("order_items").select().execute().value
         return Dictionary(uniqueKeysWithValues: rows.map {
             ($0.order_ref, AmazonOrderDetail(orderID: $0.order_ref, items: $0.items,
                                              subtotal: $0.subtotal.map(Repository.decimal), tax: $0.tax.map(Repository.decimal),
-                                             total: $0.total.map(Repository.decimal)))
+                                             total: $0.total.map(Repository.decimal),
+                                             placed: $0.placed_at.flatMap(Repository.day.date(from:)),
+                                             returnStatus: $0.return_status, returnNote: $0.return_note))
         })
     }
 
     func save(_ detail: AmazonOrderDetail, userID: String) async throws {
-        struct Row: Encodable { let user_id: String; let order_ref: String; let items: [AmazonItem]; let subtotal: Double?; let tax: Double?; let total: Double? }
+        struct Row: Encodable { let user_id: String; let order_ref: String; let items: [AmazonItem]; let subtotal: Double?; let tax: Double?; let total: Double?; let placed_at: String?; let return_status: String?; let return_note: String? }
         let row = Row(user_id: userID, order_ref: detail.orderID, items: detail.items,
                       subtotal: detail.subtotal.map { NSDecimalNumber(decimal: $0).doubleValue },
                       tax: detail.tax.map { NSDecimalNumber(decimal: $0).doubleValue },
-                      total: detail.total.map { NSDecimalNumber(decimal: $0).doubleValue })
+                      total: detail.total.map { NSDecimalNumber(decimal: $0).doubleValue },
+                      placed_at: detail.placed.map(Repository.day.string(from:)),
+                      return_status: detail.returnStatus, return_note: detail.returnNote)
         try await client.from("order_items").upsert(row, onConflict: "user_id,order_ref").execute()
     }
 

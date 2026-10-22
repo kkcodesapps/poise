@@ -5,6 +5,7 @@ struct HomeView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
     @State private var searchText = ""
+    @State private var amazonSignIn = false
     @State private var filterAccount: String?
     @State private var filterCategory: String?
     @State private var filterPending = false
@@ -33,6 +34,24 @@ struct HomeView: View {
                                 }
                                 Spacer(minLength: 8)
                                 Text("Relink").font(Theme.Font.subheadStrong).foregroundStyle(Theme.Accent.default)
+                            }
+                            .padding(Theme.Spacing.s12).padding(.horizontal, 4)
+                            .background(Theme.Status.trackBg, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    // Amazon drops its session every few weeks. Signing in again belongs here, where the pull that found
+                    // the problem happened — not three taps away in Settings.
+                    if model.amazonLapsed {
+                        Button { amazonSignIn = true } label: {
+                            HStack(spacing: Theme.Spacing.s12) {
+                                Image(systemName: "exclamationmark.triangle").font(.system(size: 17, weight: .medium)).foregroundStyle(Theme.Status.track)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Amazon signed you out").font(Theme.Font.subheadStrong).foregroundStyle(Theme.Text.primary)
+                                    Text("New Amazon charges arrive without what was in them until you sign in again.").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
+                                }
+                                Spacer(minLength: 8)
+                                Text("Sign in").font(Theme.Font.subheadStrong).foregroundStyle(Theme.Accent.default)
                             }
                             .padding(Theme.Spacing.s12).padding(.horizontal, 4)
                             .background(Theme.Status.trackBg, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
@@ -102,7 +121,7 @@ struct HomeView: View {
                     }
                     if !model.openWatches.isEmpty { WatchingCard().padding(.top, Theme.Spacing.s8) }
                     if model.looksLinked {
-                        Feed(transactions: model.transactions, accounts: model.accounts, today: model.today) { model.selectedTransaction = $0 }
+                        Feed(transactions: model.feed, accounts: model.accounts, today: model.today) { model.selectedTransaction = $0 }
                     }
                 }
                 .padding(.horizontal, Theme.Spacing.s16)
@@ -113,6 +132,7 @@ struct HomeView: View {
             }
             .background(Theme.Bg.base)
             .refreshable { await model.refresh() }
+            .sheet(isPresented: $amazonSignIn) { AmazonConnectView(startSignedOut: true) }
             .navigationTitle("Home")
             #if DEBUG
             .onAppear { let a = ProcessInfo.processInfo.arguments; if let i = a.firstIndex(of: "-search"), i + 1 < a.count { searchText = a[i + 1] } }
@@ -332,7 +352,8 @@ struct TransactionRowView: View {
                 }
             VStack(alignment: .leading, spacing: 2) {
                 Text(transaction.displayMerchant).font(Theme.Font.headline).foregroundStyle(titleColor).lineLimit(1)
-                Text(subtitle).font(Theme.Font.footnote).foregroundStyle(subtitleColor).lineLimit(1)
+                // The subtitle is the line that changes under you when an order's contents arrive.
+                RevealingText(text: subtitle).font(Theme.Font.footnote).foregroundStyle(subtitleColor).lineLimit(1)
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 2) {

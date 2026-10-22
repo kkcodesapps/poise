@@ -46,7 +46,7 @@ struct AmazonConnectView: View {
             }
         }
         .presentationDragIndicator(.visible)
-        .interactiveDismissDisabled(stage == .reading)
+
         .onAppear {
             if startReading { stage = .reading }
             else if startSignedOut, attempt == 0 { stage = .signIn; attempt += 1 }
@@ -119,7 +119,9 @@ struct AmazonConnectView: View {
             settled += 1
             guard settled >= 2 else { continue }
             stage = .reading
-            await model.syncAmazon(deep: true)
+            // Handed to the model so closing this sheet doesn't stop it.
+            model.startAmazonSweep()
+            while !Task.isCancelled, model.amazonReading { try? await Task.sleep(for: .seconds(1)) }
             guard model.amazonLapsed else { stage = .done; return }
             // Amazon let us past the form but not to the page. The reader is a separate web view, so whatever they're
             // part-way through is still on screen — go back to it and keep waiting rather than tell a cheerful lie.
@@ -141,6 +143,9 @@ struct AmazonConnectView: View {
                     .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).padding(.top, Theme.Spacing.s16)
             }
             Spacer()
+            Button("Leave it running") { dismiss() }.buttonStyle(.secondary)
+            Text("It carries on while you use Poise, and picks up where it stopped if you close the app.")
+                .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, Theme.Spacing.s16)
