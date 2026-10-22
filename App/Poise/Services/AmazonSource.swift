@@ -48,6 +48,7 @@ final class AmazonSource: NSObject {
     }()
 
     private var waiting: CheckedContinuation<Void, Error>?
+    private var textOnly = false
 
     // MARK: connection state
 
@@ -95,6 +96,23 @@ final class AmazonSource: NSObject {
     /// we want is also the page that tells us we're in.
     var startURL: URL { AmazonOrders.transactionsPage }
 
+    /// The reader wants words, not pictures. An Amazon order page carries a screenful of product photography and ad
+    /// carousels, and seventy of them in a row is enough memory for iOS to kill the app — which arrives as a crash
+    /// report. Blocking images, media and fonts in the reader only makes the sweep lighter and faster; the sign-in
+    /// view is untouched and still looks like Amazon.
+    private func useTextOnly() async {
+        guard !textOnly, let store = WKContentRuleListStore.default() else { return }
+        let rules = #"[{"trigger":{"url-filter":".*","resource-type":["image","media","font"]},"action":{"type":"block"}}]"#
+        guard let list = try? await store.compileContentRuleList(forIdentifier: "poise-reader-text-only", encodedContentRuleList: rules) else { return }
+        reader.configuration.userContentController.add(list)
+        textOnly = true
+    }
+
+    /// Lets go of the page just read. Without this the last order's DOM sits in memory through the next load.
+    private func releaseReader() async {
+        try? await load(URL(string: "about:blank")!)
+    }
+
     /// Puts the payments page in front of the user. Amazon redirects to its own sign-in when the session is gone, and
     /// back here once they're through it — so this is both the way in and the test of whether we're in.
     func start() {
@@ -125,8 +143,9 @@ final class AmazonSource: NSObject {
     /// A page is about fifteen orders and a fortnight, so how far to walk depends on what's still missing rather than
     /// on a fixed count: it stops once it's read past `earliest`, or Amazon runs out of pages, or the cap is reached.
     func read(back earliest: Date?, maxPages: Int = 3, onPage: (@MainActor (Int, Date?) -> Void)? = nil) async throws -> [AmazonOrder] {
+        await useTextOnly()
         try await load(AmazonOrders.transactionsPage)
-        guard await signedIn() else { hasLapsed = true; throw Failure.signedOut }
+        guard await signedIn() else { hasLapsed = true; lastChecked = .now; throw Failure.signedOut }
 
         var orders: [AmazonOrder] = []
         var seen = Set<String>()
@@ -166,7 +185,7 @@ final class AmazonSource: NSObject {
             try? await Task.sleep(for: .milliseconds(600))          // a beat between pages; Amazon throttles a gallop
             guard await clickNextPage() else { break }
         }
-        guard !bounced || !orders.isEmpty else { hasLapsed = true; throw Failure.signedOut }
+        guard !bounced || !orders.isEmpty else { hasLapsed = true; lastChecked = .now; throw Failure.signedOut }
         hasLapsed = bounced                                     // read what we could, but say the session is done
         lastChecked = .now
         // What's reported is the deepest read, not the latest. Order numbers already written stay written, so a later
@@ -196,13 +215,18 @@ final class AmazonSource: NSObject {
     /// Opens one order's own page and reads what was in it. A page load per order, so callers ask for a few at a time
     /// rather than the lot — Amazon throttles a gallop and there is no bulk view of this.
     func readItems(for orderID: String) async throws -> AmazonOrderDetail? {
+        await useTextOnly()
         try await load(AmazonOrders.url(for: orderID))
-        guard let text = await settledText(differentFrom: ""), isOrderPage(text) else {
-            if await isAtSignIn() { hasLapsed = true; throw Failure.signedOut }
-            return nil
+        let text = await settledText(differentFrom: "")
+        let atSignIn = await isAtSignIn()
+        var result: AmazonOrderDetail?
+        if let text, isOrderPage(text) {
+            let detail = AmazonOrderDetails.parse(text, orderID: orderID)
+            result = detail.items.isEmpty ? nil : detail
         }
-        let detail = AmazonOrderDetails.parse(text, orderID: orderID)
-        return detail.items.isEmpty ? nil : detail
+        await releaseReader()                                       // before returning, so the next order starts clean
+        if result == nil, atSignIn { hasLapsed = true; throw Failure.signedOut }
+        return result
     }
 
     private func isOrderPage(_ text: String) -> Bool {

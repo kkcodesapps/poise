@@ -13,7 +13,8 @@ private let log = Logger(subsystem: "com.koliokolev.poise", category: "app")
 @MainActor @Observable
 final class AppModel {
     enum Tab: String, CaseIterable, Identifiable {
-        case home = "Home", leaks = "Leaks", pace = "Pace", next14 = "Next 14", whereTab = "Where"
+        // The tab is just "Next"; the screen's own title says how far ahead it's looking.
+        case home = "Home", leaks = "Leaks", pace = "Pace", next14 = "Next", whereTab = "Where"
         var id: String { rawValue }
         var symbol: String {
             switch self {
@@ -31,6 +32,9 @@ final class AppModel {
     /// Taken out of the math by the user; listed under Hidden accounts, never handed to the engine.
     var hiddenAccounts: [Account] = []
     var transactions: [PoiseKit.Transaction] = []
+    /// The feed's copy: one row per movement. Both halves of a transfer or card payment are real, and the engines need
+    /// both, but a feed showing each twice reads as paying twice.
+    var feed: [PoiseKit.Transaction] = []
     var streams: [RecurringStream] = []
     var verdict: Verdict?
     var pace: Pace?
@@ -43,6 +47,15 @@ final class AppModel {
     var categories: CategorySet = .builtIn
     var watches: [Watch] = []
     var wherePeriod: Period = .month { didSet { whereWindow = Periods.window(wherePeriod, containing: whereAnchor) } }
+    /// How far ahead the Next screen looks. A fortnight answers "can I reach payday"; a month catches rent, a
+    /// quarterly bill or an annual renewal sitting just past that edge. Per device, and remembered.
+    var horizonDays: Int = UserDefaults.standard.object(forKey: "horizonDays") as? Int ?? 14 {
+        didSet {
+            guard horizonDays != oldValue else { return }
+            UserDefaults.standard.set(horizonDays, forKey: "horizonDays")
+            recompute()
+        }
+    }
     var whereAnchor: Date = .now
     var whereWindow: DateInterval = Periods.window(.month, containing: .now)
     var showWatching = false
@@ -50,6 +63,9 @@ final class AppModel {
     var lastSync: Date?
     var institutions: [String] = []
     var relinkNeeded: [Repository.Item] = []
+    /// Banks holding cards whose due dates Poise was never granted. Their payments are missing from Next until the
+    /// user goes back through Link and allows it.
+    var statementConsentNeeded: [Repository.Item] = []
     /// Apple Card / Apple Cash / Savings are read from Wallet on this phone; true once the server has that item.
     var walletLinked = false
     /// Wallet access was turned off in Settings after linking; the banner sends the user back there.
@@ -70,6 +86,8 @@ final class AppModel {
     var orderItems: [String: AmazonOrderDetail] = [:]
     /// Orders currently being fetched, so a sheet can show that it's working and can't ask twice.
     var fetchingItems: Set<String> = []
+    /// The long read, owned here rather than by the screen that started it — closing that screen must not stop it.
+    private var amazonSweep: Task<Void, Never>?
     /// The second phase of a check: reading what was in each order. Zero when that phase isn't running.
     var amazonItemsTotal = 0
     var amazonItemsDone = 0
@@ -238,12 +256,21 @@ final class AppModel {
             amazonConnected = amazon.isConnected; amazonLapsed = amazon.hasLapsed; amazonCheckedAt = amazon.lastChecked
             amazonOrdersRead = amazon.ordersRead; amazonPagesRead = amazon.pagesRead; amazonReachedBack = amazon.reachedBack
             // A connected Amazon is checked on launch, at most every six hours — new charges arrive with their order.
-            Task { await syncAmazonIfDue(notBefore: 6 * 3600) }
+            Task { await syncAmazonIfDue(notBefore: 6 * 3600, maxPages: 3, items: 8) }
+            // An unfinished sweep resumes on its own: it only ever reads orders that still want reading.
+            if amazonConnected, !amazonLapsed, raw.contains(where: { $0.orderRef.map(needsReading) ?? false }) {
+                startAmazonSweep()
+            }
             #if DEBUG
             // `-tab leaks|pace|next14` and `-review` open a screen on launch (screenshots, UI tests).
             let args = ProcessInfo.processInfo.arguments
-            if let i = args.firstIndex(of: "-tab"), i + 1 < args.count { tab = Tab.allCases.first { $0.rawValue.lowercased().replacingOccurrences(of: " ", with: "") == args[i + 1].lowercased() } ?? .home }
+            if let i = args.firstIndex(of: "-tab"), i + 1 < args.count {
+                let want = args[i + 1].lowercased()
+                tab = Tab.allCases.first { $0.rawValue.lowercased().replacingOccurrences(of: " ", with: "") == want || "\($0)".lowercased() == want } ?? .home
+            }
             if args.contains("-review") { showReview = true }
+            if args.contains("-watching") { showWatching = true }
+            if let i = args.firstIndex(of: "-horizon"), i + 1 < args.count, let d = Int(args[i + 1]) { horizonDays = d }
             // `-amazon [connect|signin|connection]` opens the Amazon screens (screenshots, checks).
             if let i = args.firstIndex(of: "-amazon") {
                 let which = i + 1 < args.count ? args[i + 1] : "connect"
@@ -387,7 +414,8 @@ final class AppModel {
             let (s, p) = try await (snap, prefs)
             apply(s, p)
             if let id = try? await Backend.client.auth.session.user.id.uuidString { SnapshotCache.save(s, p, for: id) }
-            if let loaded = try? await repository.loadOrderItems() { orderItems = loaded }
+            if let loaded = try? await repository.loadOrderItems() { orderItems = loaded; recompute() }
+            await pruneDuplicateWatches()
             return true
         } catch {
             if error is CancellationError { return false }                  // the caller went away; nothing to say
@@ -442,7 +470,7 @@ final class AppModel {
     /// `deep` is the first connection, which walks back far enough to cover the history Poise already holds; a routine
     /// check reads one page, which is about three weeks. Returns how many charges gained an order.
     @discardableResult
-    func syncAmazon(deep: Bool = false, maxPages: Int? = nil) async -> Int {
+    func syncAmazon(deep: Bool = false, maxPages: Int? = nil, items: Int? = nil) async -> Int {
         guard !amazonReading else { return 0 }
         amazonReading = true; amazonProgress = 0; amazonReadingBackTo = nil
         defer { amazonReading = false; amazonProgress = 0; amazonReadingBackTo = nil }
@@ -465,7 +493,7 @@ final class AppModel {
             let saved = await repository.setOrderRefs(fresh)
             // Then the second phase, with the session warm: what was in each of them. A check the user asked for reads
             // the lot; a background wake takes a couple, because it only has seconds.
-            await fetchAllItems(limit: deep ? nil : 2)
+            await fetchAllItems(limit: deep ? nil : (items ?? 2))
             return saved
         } catch AmazonSource.Failure.signedOut {
             amazonLapsed = true
@@ -491,6 +519,24 @@ final class AppModel {
         t.orderRef.flatMap { orderItems[$0] }
     }
 
+    /// Where a merchant says a return has got to, for the charge behind a watch. Amazon prints it on the order page —
+    /// "Return started", and what happens next — so a refund in hand needn't look the same as one gone quiet, and the
+    /// user needn't be the one to say which.
+    func returnProgress(for watch: Watch) -> (status: String, note: String?)? {
+        guard let id = watch.transactionID,
+              let ref = raw.first(where: { $0.id == id })?.orderRef,
+              let detail = orderItems[ref], let status = detail.returnStatus else { return nil }
+        return (status, detail.returnNote)
+    }
+
+    /// True while the merchant says the return is under way; a watch like that isn't late, it's in progress.
+    func returnUnderWay(_ watch: Watch) -> Bool {
+        guard let id = watch.transactionID,
+              let ref = raw.first(where: { $0.id == id })?.orderRef,
+              let detail = orderItems[ref] else { return false }
+        return detail.returnStatus != nil && detail.returnInProgress
+    }
+
     /// What a charge bought, short enough for a feed row: one name, or the first two and a count of the rest.
     func contents(of t: PoiseKit.Transaction) -> String? {
         guard let detail = items(for: t), !detail.items.isEmpty else { return nil }
@@ -509,17 +555,29 @@ final class AppModel {
 
     /// Opens one order's page and reads its contents.
     func fetchItems(ref: String) async {
-        guard orderItems[ref] == nil, !fetchingItems.contains(ref), amazonConnected, !amazonLapsed else { return }
+        guard needsReading(ref), !fetchingItems.contains(ref), amazonConnected, !amazonLapsed else { return }
         fetchingItems.insert(ref); defer { fetchingItems.remove(ref) }
         do {
             guard let detail = try await AmazonSource.shared.readItems(for: ref) else { return }
             orderItems[ref] = detail
+            recompute()
             guard let userID = try? await Backend.client.auth.session.user.id.uuidString else { return }
             try await repository.save(detail, userID: userID)
         } catch AmazonSource.Failure.signedOut {
             amazonLapsed = true
         } catch {
             log.error("amazon items failed for \(ref, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// An order wants reading if it has never been read, or was read before Poise started keeping the day it was
+    /// placed — which is the day the charge belongs on.
+    private func needsReading(_ ref: String) -> Bool {
+        guard let detail = orderItems[ref] else { return true }
+        if detail.placed == nil { return true }
+        // A return moves: started, received, refunded. While a watch is open on that charge, keep it current.
+        return raw.contains { t in
+            t.orderRef == ref && watches.contains { w in w.kind == .refund && w.transactionID == t.id && w.status.isOpen }
         }
     }
 
@@ -532,7 +590,7 @@ final class AppModel {
         guard amazonConnected, !amazonLapsed else { return }
         var newest: [String: Date] = [:]
         for t in raw {
-            guard let ref = t.orderRef, orderItems[ref] == nil else { continue }
+            guard let ref = t.orderRef, needsReading(ref) else { continue }
             newest[ref] = max(newest[ref] ?? .distantPast, t.displayDate)
         }
         var refs = newest.keys.sorted { (newest[$0] ?? .distantPast) > (newest[$1] ?? .distantPast) }
@@ -549,13 +607,26 @@ final class AppModel {
         }
     }
 
+    /// Starts the full read and lets go of it. Signing in is the only part that needs the user; everything after is
+    /// Poise's problem, and it carries on while they get on with something else.
+    func startAmazonSweep() {
+        guard !amazonReading else { return }
+        amazonSweep = Task { [weak self] in
+            await self?.syncAmazon(deep: true)
+            self?.amazonSweep = nil
+        }
+    }
+
     /// A shallow Amazon check, skipped if one ran recently. Pull-to-refresh and the background task both come here, so
     /// neither can hammer a page that throttles.
     @discardableResult
-    func syncAmazonIfDue(notBefore seconds: TimeInterval, maxPages: Int? = nil) async -> Int {
-        guard amazonConnected, !amazonLapsed, !amazonReading else { return 0 }
-        if let last = amazonCheckedAt, Date.now.timeIntervalSince(last) < seconds { return 0 }
-        return await syncAmazon(maxPages: maxPages)
+    func syncAmazonIfDue(notBefore seconds: TimeInterval, maxPages: Int? = nil, items: Int? = nil) async -> Int {
+        guard amazonConnected, !amazonReading else { return 0 }
+        // A session Amazon has dropped is still worth trying now and then — it may have let us back in, and one page
+        // load settles it — but not on every pull, which would be a slow wait for a known answer.
+        let gate = amazonLapsed ? max(seconds, 6 * 3600) : seconds
+        if let last = amazonCheckedAt, Date.now.timeIntervalSince(last) < gate { return 0 }
+        return await syncAmazon(maxPages: maxPages, items: items)
     }
 
     /// Forgets the session and every order number it found. The charges themselves are untouched.
@@ -575,6 +646,7 @@ final class AppModel {
         lastSync = s.lastSync
         institutions = s.institutions
         relinkNeeded = s.relinkNeeded
+        statementConsentNeeded = s.statementConsentNeeded
         walletLinked = s.walletLinked
         settings = p
         customCategories = s.customCategories
@@ -605,6 +677,18 @@ final class AppModel {
             let linker = self.linker ?? BankLinker(client: Backend.client)
             self.linker = linker
             if try await linker.link(relink: item.id) != nil { await refresh(trigger: "relink") }
+        } catch { report(error) }
+    }
+
+    /// Takes the user back through Link to allow a product the bank was never given permission to share — card due
+    /// dates and statement balances, which is what Next is missing without them.
+    func grantStatementAccess(_ item: Repository.Item) async {
+        guard !isLinking else { return }
+        isLinking = true; defer { isLinking = false }
+        do {
+            let linker = self.linker ?? BankLinker(client: Backend.client)
+            self.linker = linker
+            if try await linker.link(relink: item.id, consent: true) != nil { await refresh(trigger: "consent") }
         } catch { report(error) }
     }
 
@@ -669,7 +753,7 @@ final class AppModel {
 
     private func resetState() {
         accounts = []; hiddenAccounts = []; raw = []; transactions = []; streams = []; allStreams = []; endedStreams = []; verdict = nil; pace = nil; cashflow = []; insights = []; reviewCards = []; priceItems = []
-        lastSync = nil; institutions = []; relinkNeeded = []; walletLinked = false; walletAccessLost = false; settings = Repository.Settings(); isAnonymous = true; accountName = nil
+        lastSync = nil; institutions = []; relinkNeeded = []; statementConsentNeeded = []; walletLinked = false; walletAccessLost = false; settings = Repository.Settings(); isAnonymous = true; accountName = nil
         customCategories = []; watches = []; categories = .builtIn
         rememberedLinked = false; UserDefaults.standard.removeObject(forKey: "hasLinkedBefore"); UserDefaults.standard.removeObject(forKey: "onboardingDone")
         onboarding = nil
@@ -732,7 +816,7 @@ final class AppModel {
         #endif
         async let banks: Void = refreshBanks(trigger: trigger)
         async let walletChanged = syncWallet()
-        async let amazon = syncAmazonIfDue(notBefore: 15 * 60)
+        async let amazon = syncAmazonIfDue(notBefore: 2 * 60, maxPages: 3, items: 8)
         _ = await (banks, walletChanged, amazon)
         await reload()
     }
@@ -807,7 +891,32 @@ final class AppModel {
 
     // MARK: watches
 
+    /// Clears up refund watches that doubled up on one charge while the old matching rule was closing them wrongly.
+    /// The first one made is kept — it carries the real history — and the extras go.
+    private func pruneDuplicateWatches() async {
+        var seen = Set<String>()
+        var extras: [Watch] = []
+        for w in watches.filter({ $0.kind == .refund }).sorted(by: { $0.createdAt < $1.createdAt }) {
+            guard let id = w.transactionID else { continue }
+            if seen.contains(id) { extras.append(w) } else { seen.insert(id) }
+        }
+        for w in extras { await removeWatch(w) }
+    }
+
+    /// "It arrived" — the fallback for a refund Poise can't see the end of: store credit, a gift card, a partial
+    /// amount, or money back to a card that isn't linked. Everything it can see, it closes on its own.
+    func markWatchArrived(_ w: Watch) async {
+        var out = w
+        out.status = .arrived
+        out.resolvedAt = .now
+        out.resolvedTransactionID = nil
+        await updateWatch(out)
+    }
+
     func addWatch(_ w: Watch) async {
+        // One refund watch per charge, whatever state the old one is in. A watch wrongly marked arrived used to let a
+        // second be made for the same charge, and both then sat in the list waiting on the same money.
+        if w.kind == .refund, let id = w.transactionID, watches.contains(where: { $0.kind == .refund && $0.transactionID == id }) { return }
         watches.insert(w, at: 0); recompute()
         do { try await repository.insert(watch: w) } catch { report(error) }
     }
@@ -1008,7 +1117,8 @@ final class AppModel {
     func search(_ query: String, account: String? = nil, category: String? = nil, pending: Bool = false, excluded: Bool = false) -> [PoiseKit.Transaction] {
         let q = query.trimmingCharacters(in: .whitespaces)
         let amount = Decimal(string: q.replacingOccurrences(of: "$", with: "").replacingOccurrences(of: ",", with: ""))
-        return transactions.filter { t in
+        // Searching finds what the feed shows, so a card payment is one result rather than its two halves.
+        return feed.filter { t in
             if let account, t.accountID != account { return false }
             if let category, categories.resolve(t.categoryID).id != category || !(t.kind == .spend || t.kind == .untracked) { return false }
             if pending, !t.pending { return false }
@@ -1165,7 +1275,11 @@ final class AppModel {
         if let id = hints["stream"], let s = streams.first(where: { $0.id == id }) { selectedStream = s; return }
         if let id = hints["item"] { if priceItem(id: id) != nil { selectedPriceItem = .init(id: id) } else { showPricesList() }; return }
         if hints["review"] != nil { showReview = true; return }
-        if let tab = hints["tab"], let t = Tab.allCases.first(where: { $0.rawValue.lowercased().replacingOccurrences(of: " ", with: "") == tab }) { self.tab = t }
+        // Matched on the case name as well as the label, so a notification already sitting on a phone — which says
+        // "next14" — still opens the right tab now that the label has changed.
+        if let tab = hints["tab"], let t = Tab.allCases.first(where: {
+            $0.rawValue.lowercased().replacingOccurrences(of: " ", with: "") == tab || "\($0)" == tab
+        }) { self.tab = t }
     }
 
     /// The phone's own heads-ups, rebuilt after every recompute.
@@ -1297,11 +1411,19 @@ final class AppModel {
 
     func recompute() {
         fillLogos()
-        guard hasLinkedBank else { verdict = nil; pace = nil; cashflow = []; insights = []; reviewCards = []; transactions = []; streams = []; allStreams = []; endedStreams = []; priceItems = []; publishWidgetSnapshot(); return }
+        guard hasLinkedBank else { verdict = nil; pace = nil; cashflow = []; insights = []; reviewCards = []; transactions = []; feed = []; streams = []; allStreams = []; endedStreams = []; priceItems = []; publishWidgetSnapshot(); return }
         let now = Date.now
-        var all = TransferDetector.pair(raw, accounts: accounts)
+        // A charge belongs to the day it was bought. The merchant's own order date beats the card's, which is the day
+        // it shipped — or, on Apple Card, only the day it posted.
+        var all = raw
+        for i in all.indices {
+            guard let ref = all[i].orderRef, let placed = orderItems[ref]?.placed else { continue }
+            all[i].purchasedDate = placed
+        }
+        all = TransferDetector.pair(all, accounts: accounts)
         all = RefundMatcher.match(all)
         transactions = all
+        feed = TransferDetector.collapsed(all)
         // Cards whose provider gives a due date but no statement balance (Apple Card) get one rebuilt from their rows.
         for i in accounts.indices where accounts[i].role == .credit && (accounts[i].statementAmount == nil || accounts[i].statementIsEstimate) {
             accounts[i].statementAmount = StatementEstimator.statement(for: accounts[i], transactions: all)
@@ -1325,7 +1447,7 @@ final class AppModel {
                                  keptTarget: settings.keptTarget ?? 0.2, committedSavings: settings.committedSavings, categories: categories, paysCardsInFull: settings.paysCardsInFull)
         let v = VerdictEngine.verdict(for: input)
         let p = PaceEngine.pace(transactions: rows, streams: streams, now: now, categories: categories)
-        cashflow = CashflowEngine.nextDays(accounts: accounts, streams: streams, transactions: rows, now: now, paysCardsInFull: settings.paysCardsInFull)
+        cashflow = CashflowEngine.nextDays(horizonDays, accounts: accounts, streams: streams, transactions: rows, now: now, paysCardsInFull: settings.paysCardsInFull)
         let ranked = InsightEngine.rank(.init(verdict: v, pace: p, streams: streams, transactions: rows, now: now, acknowledged: acknowledged, dupMuted: Set(settings.dupMuted)))
         let tracked = Set(watches.filter { $0.kind == .price && $0.status.isOpen }.map(\.matcher))
         priceItems = PriceTracker.items(in: all, streams: allStreams.filter { !dismissed.contains($0.id) && isPlanLike($0) }, now: now).map { var i = $0; i.tracked = tracked.contains(i.id); return i }

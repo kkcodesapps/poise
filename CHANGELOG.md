@@ -2,6 +2,64 @@
 
 Every TestFlight build bumps the version; the section for it becomes the build's "What to Test" notes.
 
+## 0.9.3 — 2026-10-09
+
+- Next was leaving card payments out, and now says so. The due dates it needs come from the bank, and Chase and Robinhood were refusing them — the permission was asked for as optional when the accounts were linked, so it was never granted. The refusal was being swallowed, which is why a card with thousands owed simply wasn't in the forecast and nothing explained it.
+- The Next screen now names what's missing — "$6,312 owed with no due date Poise can see" — and **Allow** takes you back through your bank to grant it. One trip, and the payment appears in the forecast from then on.
+- Statements are refreshed on the hourly check too, not only when you open the app, so a due date that moves is picked up on its own.
+- Barclays was already giving us everything; Apple Card gives a due date and the statement is rebuilt from your charges. Those were right before and are unchanged.
+
+## 0.9.2 — 2026-10-03
+
+- Watching says what the money was for. A refund you're owed now shows the thing itself — "Tapo ColorPro outdoor camera" — then what was charged, to which card, and how long it's been waiting against the window it was given. A row can finally answer whether it's worth chasing.
+- Poise reads the return status from Amazon rather than asking you. The order page says "Return started · your refund will be processed when we receive your item", so a refund that's in hand no longer looks like one that's gone quiet, and it stops being counted as overdue while the merchant says it's under way. Orders behind an open refund watch are re-read so the status stays current.
+- "It arrived" closes the ones Poise genuinely can't see the end of — store credit, a gift card, a partial amount, or money back to a card you haven't linked. It's the fallback, not the method.
+
+## 0.9.1 — 2026-10-03
+
+- A refund watch now closes only on the refund it's actually waiting for. It was accepting any refund from the same shop that was at least as large, so at Amazon — where refunds are frequent — a $108.20 refund closed a watch waiting on $76.85, and Poise said money had come back that hadn't. The amount has to match now. A smaller refund is a partial one and leaves the watch open, which is the truth.
+- Watches already closed on the wrong refund repair themselves: each is re-checked, and one that doesn't hold up reopens with its real age, so an overdue refund goes back to saying it's overdue.
+- One refund watch per charge. A wrongly closed watch used to let a second be made for the same charge, leaving two rows waiting on the same money; the duplicates are cleared up on their own.
+
+## 0.9.0 — 2026-10-02
+
+- Next can look thirty days ahead. A fortnight answers "can I reach payday"; it's the wrong window for rent, a quarterly insurance bill or an annual renewal landing on the 29th — those sit just past the edge while the screen looks calm. The switch is above the chart, where you're looking, and it's remembered.
+- Fourteen stays the default, because most days it's the more useful read and a month of bars is harder to scan. The bars thin their gaps at thirty so they stay legible in the same card.
+
+## 0.8.9 — 2026-10-02
+
+- The tab is called "Next". The screen's own title still says how far ahead it's looking, so the window is named once rather than twice — and it leaves room for that window to change.
+
+## 0.8.8 — 2026-10-02
+
+- Text that changes under you now resolves instead of snapping. When an Amazon order is read while you're looking at the feed, "Shopping" becomes "Naked Whey Isolate Protein" the way invisible ink clears in iMessage — the words emerging from a haze, left to right. Only an actual change animates; scrolling a row back on screen is not news, so the feed doesn't shimmer every time it moves.
+
+## 0.8.7 — 2026-10-01
+
+- Signing in is now the only part that needs you. The long read carries on by itself — close the sheet, or the app, and it keeps going; "Leave it running" says so. It resumes where it stopped the next time Poise is open, because it only ever reads orders that still want reading.
+- Being honest about one limit: this runs while Poise is open, not while your phone is in your pocket. A web session can't be read from a sleeping app, so a sweep that was interrupted finishes on the next open or pull rather than overnight.
+
+## 0.8.6 — 2026-10-01
+
+- An Amazon charge now sits on the day you bought it. Amazon's own order date decides, because a card only authorises when the seller ships — and Apple Card reports no authorisation at all, so every Amazon charge on it was landing in the feed on the day it posted, days late. Chase charges were already right; this makes both agree with Amazon.
+- Orders read before this update are read once more to pick up their date, so your history corrects itself rather than only new charges being right.
+
+## 0.8.5 — 2026-09-30
+
+- Pulling to refresh really does check Amazon. It always asked, but only if a quarter of an hour had passed, so a pull often did nothing — now it's two minutes, and it reads further back and picks up what was in more of the new orders while it's there.
+- When Amazon has signed you out, Home says so and signs you back in from there. That was the reason for the trip to Settings: a dropped session failed quietly, and the only way to find out was to go looking for it.
+- A dropped session is retried on its own every few hours, so if Amazon lets Poise back in the message clears itself.
+
+## 0.8.4 — 2026-09-30
+
+- A credit-card payment is one row again. Paying the Apple Card from Chase produces two real rows from two banks — the money leaving one and landing on the other — and the feed was showing both, which reads as paying twice. It now shows the money leaving, which is what happened, and keeps the other half for the card's own balance. The same was true of moving money into savings.
+- Nothing was actually counted twice: both halves were already left out of spending, and the day totals were right. It was the feed that looked wrong.
+
+## 0.8.3 — 2026-09-29
+
+- Fixed the crash. When iOS woke Poise for a background Amazon check, the work was handed to it on a background thread while every part of it — the model, the web view — belongs on the main one. Assuming otherwise doesn't fail politely; it stops the app dead. That's the crash report, and it could only happen while the app wasn't in front of you, which is why it seemed to come from nowhere.
+- Reading orders is much lighter. The reader now loads words only — no product photography, no ad carousels — and lets go of each page before the next. Seventy order pages in a row was enough memory for iOS to kill the app, which also arrives as a crash report. The sweep is faster for it, and the sign-in screen still looks like Amazon.
+
 ## 0.8.2 — 2026-09-27
 
 - Amazon charges say what they were, in the feed. "Amazon · Shopping" becomes "Amazon · Naked Whey Isolate Protein", with no tap and no wait. An order of several names the first two and counts the rest.
