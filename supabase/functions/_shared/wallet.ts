@@ -216,13 +216,11 @@ export async function applyWallet(db: SupabaseClient, item: WalletItem, body: Wa
       deleted_at: null,                                  // back in Wallet's list = back in the feed
     }];
   });
+  let written: WrittenRow[] = [];
   if (rows.length) {
-    const { data: written, error } = await db.from("transactions").upsert(rows, { onConflict: "account_id,provider_txn_id" }).select("id, merchant, posted_date, kind, pending, amount, provider_category, account_id, created_at, category");
+    const { data, error } = await db.from("transactions").upsert(rows, { onConflict: "account_id,provider_txn_id" }).select("id, merchant, posted_date, kind, pending, amount, provider_category, account_id, created_at, category, pending_txn_id");
     if (error) throw error;
-    // The first walk of an account (no `since`) is history, not news.
-    const routine = body.prune?.since != null;
-    await triggerMerchantWatches(db, item.user_id, (written ?? []) as WrittenRow[], routine);
-    await notifyAfterSync(db, item.user_id, (written ?? []) as WrittenRow[], { firstSync: !routine });
+    written = (data ?? []) as WrittenRow[];
   }
 
   let pruned = 0;
@@ -249,6 +247,13 @@ export async function applyWallet(db: SupabaseClient, item: WalletItem, body: Wa
     }
     pruned = ids.length;
   }
+  // Told only now, with the pending twins already gone: a charge that posts is one charge, not two.
+  if (written.length) {
+    const routine = body.prune?.since != null;   // the first walk of an account is history, not news
+    await triggerMerchantWatches(db, item.user_id, written, routine);
+    await notifyAfterSync(db, item.user_id, written, { firstSync: !routine });
+  }
+
   // A prune with no `since` means the whole history is here now; later syncs for that account can send the window only.
   const complete = body.prune && body.prune.since == null && !item.complete.includes(body.prune.accountID)
     ? [...item.complete, body.prune.accountID] : item.complete;

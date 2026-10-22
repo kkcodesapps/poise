@@ -123,6 +123,14 @@ struct DetectionTests {
             + [Fix.tx("h4", "card", "-12.00", "Premier Car Wash", on: Fix.day(2026, 9, 14)), Fix.tx("h5", "card", "-12.00", "Premier Car Wash", on: Fix.day(2026, 9, 14))]
         #expect(Anomalies.duplicates(in: habit, calendar: Fix.calendar).isEmpty)
         #expect(Anomalies.duplicates(in: rows, muted: [Transaction.merchantKey("Shell")], calendar: Fix.calendar).isEmpty)
+        // A charge that posts: the pending row and its posted self overlap for a sync or two. One charge, not two.
+        let settling = [Fix.tx("s9", "card", "-46.62", "Clean Eatz", on: Fix.day(2026, 9, 9), pending: true),
+                        Fix.tx("s10", "card", "-46.62", "Clean Eatz", on: Fix.day(2026, 9, 9))]
+        #expect(Anomalies.duplicates(in: settling, calendar: Fix.calendar).isEmpty)
+        // Two pending charges, or two posted ones, still are.
+        let twoPending = [Fix.tx("p1", "card", "-46.62", "Clean Eatz", on: Fix.day(2026, 9, 9), pending: true),
+                          Fix.tx("p2", "card", "-46.62", "Clean Eatz", on: Fix.day(2026, 9, 9), pending: true)]
+        #expect(Anomalies.duplicates(in: twoPending, calendar: Fix.calendar).count == 1)
 
         // A refund that mirrors a charge is the opposite of a duplicate — even when a merchant rule stored it as spend.
         let mirrored = [

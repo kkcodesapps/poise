@@ -85,18 +85,27 @@ export async function syncItem(db: SupabaseClient, item: ItemRow, notify = true)
         logo_url: t.logo_url ?? t.counterparties?.find((c) => c.logo_url)?.logo_url ?? null,
       }];
     });
+    let written: WrittenRow[] = [];
     if (rows.length) {
-      const { data: written, error } = await db.from("transactions").upsert(rows, { onConflict: "account_id,provider_txn_id" }).select("id, merchant, posted_date, kind, pending, amount, provider_category, account_id, created_at, category");
+      const { data, error } = await db.from("transactions").upsert(rows, { onConflict: "account_id,provider_txn_id" }).select("id, merchant, posted_date, kind, pending, amount, provider_category, account_id, created_at, category, pending_txn_id");
       if (error) throw error;
-      await triggerMerchantWatches(db, item.user_id, (written ?? []) as WrittenRow[], notify);
-      await notifyAfterSync(db, item.user_id, (written ?? []) as WrittenRow[], { firstSync: !notify });
+      written = (data ?? []) as WrittenRow[];
     }
+    // A posted charge arrives as a *new* row, so anything the phone wrote onto the pending one — the merchant's order
+    // number — belongs to it and has to move across, or every Amazon order is lost the moment the charge settles.
+    await carryOrderRefs(db, item.user_id, written);
+    // Removals first: a charge that just posted arrives as a new row while its pending twin is still here, and a
+    // notification sent before the twin is gone reads it as being charged twice.
     if (res.removed.length) {
       const { error } = await db.from("transactions")
         .update({ deleted_at: new Date().toISOString() })
         .eq("user_id", item.user_id)
         .in("provider_txn_id", res.removed.map((r) => r.transaction_id));
       if (error) throw error;
+    }
+    if (written.length) {
+      await triggerMerchantWatches(db, item.user_id, written, notify);
+      await notifyAfterSync(db, item.user_id, written, { firstSync: !notify });
     }
 
     totals.added += res.added.length; totals.modified += res.modified.length; totals.removed += res.removed.length;
@@ -109,6 +118,22 @@ export async function syncItem(db: SupabaseClient, item: ItemRow, notify = true)
   return totals;
 }
 
+
+/** Moves a merchant's order number from the pending row to the posted row that replaces it. */
+async function carryOrderRefs(db: SupabaseClient, userID: string, written: WrittenRow[]) {
+  const replacing = written.filter((r) => r.pending_txn_id);
+  if (!replacing.length) return;
+  const { data: previous } = await db.from("transactions")
+    .select("provider_txn_id, order_ref")
+    .eq("user_id", userID)
+    .in("provider_txn_id", replacing.map((r) => r.pending_txn_id as string))
+    .not("order_ref", "is", null);
+  for (const old of previous ?? []) {
+    const row = replacing.find((r) => r.pending_txn_id === old.provider_txn_id);
+    if (!row) continue;
+    await db.from("transactions").update({ order_ref: old.order_ref }).eq("id", row.id).is("order_ref", null);
+  }
+}
 
 /** A charge from a merchant the user asked to be told about: mark the watch triggered, and say so. */
 export async function triggerMerchantWatches(db: SupabaseClient, userID: string, rows: { id: string; merchant: string; posted_date: string; kind: string; amount?: number }[], notify = true) {

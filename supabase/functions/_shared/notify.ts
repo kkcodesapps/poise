@@ -7,6 +7,7 @@ import { pushPrefs, sendPush } from "./apns.ts";
 export interface WrittenRow {
   id: string; merchant: string; posted_date: string; kind: string; pending: boolean;
   amount: number; provider_category: string | null; account_id: string; created_at: string; category: string | null;
+  pending_txn_id?: string | null;
 }
 
 const money = (n: number) => `$${Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
@@ -67,9 +68,16 @@ export async function notifyAfterSync(db: SupabaseClient, userID: string, writte
   const muted = new Set<string>((prefRow?.dup_muted ?? []) as string[]);
   for (const r of spend) {
     if (Math.abs(r.amount) < 10 || muted.has(merchantKey(r.merchant))) continue;
-    const { data: twins } = await db.from("transactions").select("id, merchant, posted_date").eq("user_id", userID).eq("amount", r.amount)
+    const { data: twins } = await db.from("transactions").select("id, merchant, posted_date, pending, provider_txn_id, pending_txn_id").eq("user_id", userID).eq("amount", r.amount)
       .eq("account_id", r.account_id).eq("posted_date", r.posted_date).neq("id", r.id).is("deleted_at", null).limit(5);
-    const twin = (twins ?? []).find((t: { merchant: string }) => merchantKey(t.merchant) === merchantKey(r.merchant));
+    // Two charges means two rows in the same state. A pending row and the posted row it becomes are one charge —
+    // whether the provider links them (`pending_txn_id`) or just leaves both behind for a sync or two.
+    type Twin = { id: string; merchant: string; posted_date: string; pending: boolean; provider_txn_id: string; pending_txn_id: string | null };
+    const twin = (twins ?? []).find((t: Twin) =>
+      merchantKey(t.merchant) === merchantKey(r.merchant)
+      && t.pending === r.pending                                   // one pending, one posted = the same charge settling
+      && t.provider_txn_id !== r.pending_txn_id                    // …and when the provider says so outright
+      && t.pending_txn_id == null);
     if (!twin) continue;
     const from = new Date(new Date(r.posted_date).getTime() - 90 * 86_400_000).toISOString().slice(0, 10);
     const { data: same } = await db.from("transactions").select("id, merchant").eq("user_id", userID).eq("amount", r.amount)

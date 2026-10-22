@@ -10,6 +10,26 @@ const PROFILES = IDS.flatMap(([n, id]) => [[`${n} Dev`, id, 'IOS_APP_DEVELOPMENT
 // App IDs registered on demand. Capabilities that the API can't switch on (FinanceKit) are enabled by hand in the portal.
 const NAMES = { 'com.koliokolev.poise.finance': 'Poise Finance' };
 
+// `--check` answers one question: is FinanceKit on the extension's App ID yet, and do the local profiles carry it?
+if (process.argv.includes('--check')) {
+  (async () => {
+    const ids = (await call('GET', '/bundleIds?limit=100')).json.data ?? [];
+    for (const [, identifier] of IDS.map((x) => [x[0], x[1]])) {
+      const b = ids.find((x) => x.attributes.identifier === identifier);
+      if (!b) { console.log(`${identifier}: not registered`); continue; }
+      const caps = ((await call('GET', `/bundleIds/${b.id}/bundleIdCapabilities`)).json.data ?? []).map((c) => c.attributes.capabilityType);
+      console.log(`${identifier}: ${caps.join(', ') || '(none)'}${caps.includes('FINANCE_KIT') ? '  ← FinanceKit ✓' : ''}`);
+    }
+    const dir = path.join(os.homedir(), 'Library', 'MobileDevice', 'Provisioning Profiles');
+    for (const f of fs.readdirSync(dir).filter((f) => f.endsWith('.mobileprovision'))) {
+      const plist = require('child_process').execSync(`security cms -D -i "${path.join(dir, f)}"`, { encoding: 'utf8' });
+      const name = (plist.match(/<key>Name<\/key>\s*<string>([^<]+)</) || [])[1] ?? '';
+      if (!name.startsWith('Poise Finance')) continue;
+      console.log(`${name}: ${plist.includes('com.apple.developer.financekit') ? 'profile carries FinanceKit ✓' : 'profile has no FinanceKit — the extension is left out of builds'}`);
+    }
+  })();
+} else {
+
 (async () => {
   const certs = (await call('GET', '/certificates?limit=50')).json.data;
   const local = require('child_process').execSync('security find-identity -v -p codesigning', { encoding: 'utf8' });
@@ -45,3 +65,4 @@ const NAMES = { 'com.koliokolev.poise.finance': 'Poise Finance' };
     console.log(`${name}: ${a.uuid} (expires ${a.expirationDate.slice(0, 10)}${profileType === 'IOS_APP_DEVELOPMENT' ? `, ${devices.length} devices` : ''})`);
   }
 })();
+}

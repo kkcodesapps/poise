@@ -5,6 +5,8 @@ const fs = require('fs');
 const { call } = require('./asc.js');
 
 const [version, build] = process.argv.slice(2);
+// App Store Connect drops a leading zero from the minute ("20260924.0749" → "20260924.749"), so match on both.
+const buildVariants = [build, build.replace(/\.0+/, ".")].filter((v, i, a) => a.indexOf(v) === i);
 if (!version || !build) { console.error('usage: whatsnew.js <version> <build>'); process.exit(1); }
 const APP = '6813939754';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -23,8 +25,11 @@ function notes() {
 (async () => {
   let found = null;
   for (let i = 0; i < 60 && !found; i++) {   // up to 30 minutes
-    const r = await call('GET', `/builds?filter%5Bapp%5D=${APP}&filter%5Bversion%5D=${build}&limit=1`);
-    const b = r.json.data?.[0];
+    let b;
+    for (const v of buildVariants) {
+      const r = await call('GET', `/builds?filter%5Bapp%5D=${APP}&filter%5Bversion%5D=${v}&limit=1`);
+      if (r.json.data?.[0]) { b = r.json.data[0]; break; }
+    }
     if (b && b.attributes.processingState !== 'PROCESSING') found = b;
     else { if (i === 0) process.stdout.write('waiting for App Store Connect to process the build'); process.stdout.write('.'); await sleep(30_000); }
   }

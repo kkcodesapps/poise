@@ -37,11 +37,11 @@ public enum Periods {
 
     /// The previous window, cut to the same elapsed length when the current one is still in progress
     /// (September 1–15 compares to August 1–15; a finished month compares to the whole previous month).
-    public static func comparable(previousOf window: DateInterval, _ period: Period, now: Date, calendar: Calendar = .current) -> DateInterval {
-        let prev = shift(window, period, by: -1, calendar: calendar)
-        guard window.holds(now) else { return prev }
-        let elapsed = now.timeIntervalSince(window.start)
-        return DateInterval(start: prev.start, end: min(prev.end, prev.start.addingTimeInterval(elapsed)))
+    /// The period a window is measured against: the whole one before it. A month in progress therefore reads lower than
+    /// a full month, which is the plain reading of "vs Aug" — the screen says "so far" rather than quietly comparing
+    /// August's first 24 days.
+    public static func comparable(previousOf window: DateInterval, _ period: Period, calendar: Calendar = .current) -> DateInterval {
+        shift(window, period, by: -1, calendar: calendar)
     }
 
     public static func slices(_ window: DateInterval, _ period: Period, calendar: Calendar = .current) -> [Slice] {
@@ -85,13 +85,14 @@ public enum Periods {
 
     public static func previousLabel(_ period: Period) -> String { switch period { case .week: "last week"; case .month: "last month"; case .year: "last year" } }
 
-    /// Compact "vs" label for rows: "vs Aug", "vs last wk", "vs 2025".
+    /// The whole period a window is measured against, named the way the screen says it: "Aug" in a row, "last month"
+    /// in a sentence.
     public static func shortPreviousLabel(_ window: DateInterval, _ period: Period, calendar: Calendar = .current) -> String {
         let prev = shift(window, period, by: -1, calendar: calendar)
         switch period {
         case .week: return "vs last wk"
-        case .month: return "vs \(prev.start.formatted(style(calendar).month(.abbreviated)))"
-        case .year: return "vs \(prev.start.formatted(style(calendar).year()))"
+        case .month: return "vs " + prev.start.formatted(style(calendar).month(.abbreviated))
+        case .year: return "vs " + prev.start.formatted(style(calendar).year())
         }
     }
 }

@@ -28,11 +28,20 @@ struct WhereAndWatchTests {
         #expect(Periods.title(month, .month, calendar: Fix.calendar) == "September")
     }
 
-    @Test func comparableWindowIsCutToElapsedLength() {
+    @Test func aWindowIsMeasuredAgainstTheWholePeriodBefore() {
+        // September, mid-month, compares against all of August — the plain reading of "vs Aug".
         let month = Periods.window(.month, containing: now, calendar: Fix.calendar)
-        let prev = Periods.comparable(previousOf: month, .month, now: now, calendar: Fix.calendar)
-        #expect(Fix.calendar.component(.month, from: prev.start) == 8)
-        #expect(Fix.calendar.component(.day, from: prev.end) == 15)                 // Aug 1 – Aug 15 12:00, same elapsed length
+        let prev = Periods.comparable(previousOf: month, .month, calendar: Fix.calendar)
+        #expect(Fix.calendar.component(.month, from: prev.start) == 8 && Fix.calendar.component(.day, from: prev.start) == 1)
+        #expect(prev.end == Fix.calendar.dateInterval(of: .month, for: Fix.day(2026, 8, 10))?.end)
+    }
+
+    @Test func theComparisonLabelNamesTheWholePreviousPeriod() {
+        let month = Periods.window(.month, containing: now, calendar: Fix.calendar)
+        #expect(Periods.shortPreviousLabel(month, .month, calendar: Fix.calendar) == "vs Aug")
+        #expect(Periods.previousLabel(.month) == "last month")
+        let august = Periods.window(.month, containing: Fix.day(2026, 8, 10), calendar: Fix.calendar)
+        #expect(Periods.shortPreviousLabel(august, .month, calendar: Fix.calendar) == "vs Jul")
     }
 
     @Test func breakdownRanksAndNetsRefunds() {
@@ -43,7 +52,7 @@ struct WhereAndWatchTests {
         #expect(b.total == Fix.money("330"))                                          // 200 − 20 + 100 + 50; the kept-lens $300 is not spend
         #expect(b.rows.map(\.categoryID) == ["dining", "groceries", "transport"])
         #expect(b.rows[0].amount == Fix.money("180") && b.rows[0].count == 1)
-        #expect(b.rows[0].delta == Fix.money("80"))                                    // vs $100 in Aug 1–15
+        #expect(b.rows[0].delta == Fix.money("80"))                                    // vs $100 in August
         #expect(b.rows[2].delta == nil)                                                // Uber is new
         #expect(b.slices.count == 5 && b.slices[1].amount == Fix.money("130") && b.slices[1].transactions.count == 3)   // Sep 8–14: TJ 100 + Uber 50 − refund 20
         #expect(abs(b.rows[0].share - 180.0 / 330.0) < 0.001)
