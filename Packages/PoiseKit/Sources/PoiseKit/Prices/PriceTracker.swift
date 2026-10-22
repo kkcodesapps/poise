@@ -41,8 +41,8 @@ public struct PriceItem: Identifiable, Hashable, Sendable {
     public var steady = true
     /// For a plan: the stream it follows. For usage: the plan it sits on top of.
     public var streamID: String?
-    /// "plan" / "usage" when a merchant has both, so the two runs read apart: "Cursor · plan", "Cursor · usage".
-    public var planSuffix: String?
+    /// Pay-as-you-go charges from the same merchant that aren't the plan — shown under the plan, never as their own run.
+    public var usage: [Purchase] = []
 
     public var last: Decimal { purchases.last?.price ?? 0 }
     public var average: Decimal { purchases.isEmpty ? 0 : (purchases.reduce(Decimal(0)) { $0 + $1.price } / Decimal(purchases.count)).roundedToCents }
@@ -55,6 +55,10 @@ public struct PriceItem: Identifiable, Hashable, Sendable {
         guard steady, PriceTracker.moved(last, from: usual) else { return .steady }
         return delta > 0 ? .up : .down
     }
+    /// What the pay-as-you-go side came to in a month.
+    public func usage(in month: DateInterval) -> Decimal { usage.filter { month.holds($0.date) }.reduce(0) { $0 + $1.price } }
+    public var hasUsage: Bool { !usage.isEmpty }
+
     /// Bought within the last 45 days at a price that isn't the usual one.
     public func movedLately(now: Date, calendar: Calendar = .current) -> Bool {
         direction != .steady && (calendar.dateComponents([.day], from: lastSeen, to: now).day ?? 99) <= 45
@@ -98,19 +102,24 @@ public enum PriceTracker {
         for s in streams where s.kind != .income {
             let group = s.transactionIDs.compactMap { byID[$0] }.filter { ($0.displayName ?? "").trimmingCharacters(in: .whitespaces).isEmpty }   // named rows already have their run
             guard group.count >= 2 else { continue }
-            let hasOthers = !(byMerchant[Transaction.merchantKey(s.merchant)] ?? []).isEmpty
             if var item = build(id: "plan|\(s.id)", source: .plan, name: s.merchant, group: group, calendar: calendar) {
-                item.streamID = s.id; item.planSuffix = hasOthers ? "plan" : nil
+                item.streamID = s.id
                 out.append(item)
             }
         }
         for (key, group) in byMerchant where group.count >= minimumMerchantPurchases {
             let latest = group.max { $0.displayDate < $1.displayDate }!
-            if var item = build(id: "merchant|\(key)", source: .merchant, name: latest.merchant, group: group, calendar: calendar) {
-                item.steady = sellsOneThing(group)
-                if let plan = streams.first(where: { $0.kind != .income && Transaction.merchantKey($0.merchant) == key }) { item.streamID = plan.id; item.planSuffix = "usage"; item.steady = false }   // pay-as-you-go varies by nature
-                out.append(item)
+            // A merchant that already has a plan keeps its extra charges as that plan's usage, on the plan's own page.
+            if let plan = streams.first(where: { $0.kind != .income && Transaction.merchantKey($0.merchant) == key }) {
+                if let i = out.firstIndex(where: { $0.id == "plan|\(plan.id)" }) {
+                    out[i].usage = group.sorted { ($0.displayDate, $0.id) < ($1.displayDate, $1.id) }
+                        .map { PriceItem.Purchase(id: $0.id, date: $0.displayDate, price: $0.magnitude, merchant: $0.merchant, accountID: $0.accountID, pending: $0.pending) }
+                }
+                continue
             }
+            // Everything else is only an item when it charges the same every time; a store's basket has no price.
+            guard sellsOneThing(group) else { continue }
+            if let item = build(id: "merchant|\(key)", source: .merchant, name: latest.merchant, group: group, calendar: calendar) { out.append(item) }
         }
         return out.sorted { $0.lastSeen > $1.lastSeen }
     }
@@ -128,12 +137,14 @@ public enum PriceTracker {
         }
     }
 
-    /// A merchant that charges about the same each time is selling one thing; a grocery store isn't.
+    /// A merchant that charges the same every time is selling one thing; a shop that sells everything isn't. Measured on
+    /// the real feed: at ±25 % / 60 % Amazon and Instacart looked like items, so the bar is 70 % of the latest twelve
+    /// within ±10 % of the median *and* a total spread no wider than the median itself.
     static func sellsOneThing(_ group: [Transaction]) -> Bool {
         let recent = group.sorted { $0.displayDate > $1.displayDate }.prefix(12).map(\.magnitude)
-        guard let median = median(Array(recent)), median > 0 else { return false }
-        let near = recent.filter { abs($0 - median) <= median * Decimal(0.25) }.count
-        return Double(near) / Double(recent.count) >= 0.6
+        guard let median = median(Array(recent)), median > 0, let lo = recent.min(), let hi = recent.max() else { return false }
+        let near = recent.filter { abs($0 - median) <= max(Decimal(0.5), median * Decimal(0.10)) }.count
+        return Double(near) / Double(recent.count) >= 0.7 && (hi - lo) <= median * Decimal(0.6)
     }
 
     static func median(_ values: [Decimal]) -> Decimal? {

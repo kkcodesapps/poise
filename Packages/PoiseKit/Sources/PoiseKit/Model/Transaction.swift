@@ -43,9 +43,11 @@ public struct Transaction: Identifiable, Hashable, Codable, Sendable {
     public var createdAt: Date?
     /// The merchant's logo, when the provider has one.
     public var logoURL: String?
+    /// The merchant's own order number, when the user has connected that merchant. Opens the charge in their app.
+    public var orderRef: String?
 
     public init(id: String, accountID: String, amount: Decimal, merchant: String, authorizedDate: Date? = nil, date: Date, pending: Bool = false, kind: TransactionKind = .spend, category: SpendCategory? = nil, categoryID: String? = nil, pairID: String? = nil, isFee: Bool = false,
-                displayName: String? = nil, note: String? = nil, excluded: Bool = false, createdAt: Date? = nil, logoURL: String? = nil) {
+                displayName: String? = nil, note: String? = nil, excluded: Bool = false, createdAt: Date? = nil, logoURL: String? = nil, orderRef: String? = nil) {
         self.id = id
         self.accountID = accountID
         self.amount = amount
@@ -63,6 +65,7 @@ public struct Transaction: Identifiable, Hashable, Codable, Sendable {
         self.excluded = excluded
         self.createdAt = createdAt
         self.logoURL = logoURL
+        self.orderRef = orderRef
     }
 
     /// The built-in category, when the id is one. Custom categories come back nil — use `CategorySet` for those.

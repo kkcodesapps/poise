@@ -26,7 +26,9 @@ public enum Anomalies {
             guard a.magnitude >= minimumDuplicateAmount, !muted.contains(a.merchantKey) else { continue }
             for b in spend[(i + 1)...] {
                 if !calendar.isDate(b.displayDate, inSameDayAs: a.displayDate) { break }
-                guard b.merchantKey == a.merchantKey, b.amount == a.amount, b.accountID == a.accountID, b.id != a.id, !taken.contains(b.id) else { continue }
+                // Two charges means two rows in the same state: a pending row and the posted row it becomes are one
+                // charge, and for a sync or two both are here.
+                guard b.merchantKey == a.merchantKey, b.amount == a.amount, b.accountID == a.accountID, b.pending == a.pending, b.id != a.id, !taken.contains(b.id) else { continue }
                 if !habitual(b) { out.append(Duplicate(first: a, second: b)); taken.insert(a.id); taken.insert(b.id) }
                 break
             }

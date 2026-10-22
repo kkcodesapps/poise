@@ -35,7 +35,7 @@ public enum CategoryBreakdown {
     /// Net spend per category: spend + untracked − refunds. A refund only nets here when the charge it reverses is in the
     /// same window (a September refund of an August flight belongs to August's story, not September's). Kept-lens categories are excluded.
     public static func compute(transactions: [Transaction], period: Period, window: DateInterval, now: Date, categories: CategorySet = .builtIn, calendar: Calendar = .current) -> Breakdown {
-        let previous = Periods.comparable(previousOf: window, period, now: now, calendar: calendar)
+        let previous = Periods.comparable(previousOf: window, period, calendar: calendar)
         let byID = Dictionary(uniqueKeysWithValues: transactions.map { ($0.id, $0) })
         func refundCounts(_ t: Transaction, in interval: DateInterval) -> Bool {
             guard let pair = t.pairID, let original = byID[pair] else { return false }

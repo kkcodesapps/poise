@@ -23,5 +23,7 @@
 		<key>EXExtensionPointIdentifier</key>
 		<string>com.apple.financekit.background-delivery</string>
 	</dict>
+	<key>NSFinancialDataUsageDescription</key>
+	<string>Poise keeps your Apple Card, Apple Cash and Savings up to date in the background, so a charge is counted the day you make it. It stays in your own private record and is never sold or shared.</string>
 </dict>
 </plist>
