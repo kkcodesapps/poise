@@ -45,9 +45,13 @@ public struct Transaction: Identifiable, Hashable, Codable, Sendable {
     public var logoURL: String?
     /// The merchant's own order number, when the user has connected that merchant. Opens the charge in their app.
     public var orderRef: String?
+    /// The day the merchant says the order was placed. A card authorises when the seller ships, and some cards report
+    /// only the posting day, so this is the one date that says when the thing was actually bought.
+    public var purchasedDate: Date?
 
     public init(id: String, accountID: String, amount: Decimal, merchant: String, authorizedDate: Date? = nil, date: Date, pending: Bool = false, kind: TransactionKind = .spend, category: SpendCategory? = nil, categoryID: String? = nil, pairID: String? = nil, isFee: Bool = false,
-                displayName: String? = nil, note: String? = nil, excluded: Bool = false, createdAt: Date? = nil, logoURL: String? = nil, orderRef: String? = nil) {
+                displayName: String? = nil, note: String? = nil, excluded: Bool = false, createdAt: Date? = nil, logoURL: String? = nil, orderRef: String? = nil,
+                purchasedDate: Date? = nil) {
         self.id = id
         self.accountID = accountID
         self.amount = amount
@@ -66,6 +70,7 @@ public struct Transaction: Identifiable, Hashable, Codable, Sendable {
         self.createdAt = createdAt
         self.logoURL = logoURL
         self.orderRef = orderRef
+        self.purchasedDate = purchasedDate
     }
 
     /// The built-in category, when the id is one. Custom categories come back nil — use `CategorySet` for those.
@@ -74,8 +79,9 @@ public struct Transaction: Identifiable, Hashable, Codable, Sendable {
         set { categoryID = newValue?.rawValue }
     }
 
-    /// The day the user actually paid: authorized when known, else the provider's date.
-    public var displayDate: Date { authorizedDate ?? date }
+    /// The day the user actually bought it: the merchant's own order date when known, then the card's authorisation,
+    /// and only then the day it posted.
+    public var displayDate: Date { purchasedDate ?? authorizedDate ?? date }
     public var isOutflow: Bool { amount < 0 }
     public var magnitude: Decimal { amount < 0 ? -amount : amount }
 

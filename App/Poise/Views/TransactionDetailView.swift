@@ -39,7 +39,9 @@ struct TransactionDetailView: View {
     private var account: Account? { model.accounts.first { $0.id == transaction.accountID } }
     private var changed: Bool { kind != transaction.kind || categoryID != transaction.categoryID }
     private var sameMerchantCount: Int { model.transactions.filter { $0.merchantKey == transaction.merchantKey && $0.id != transaction.id }.count }
-    private var existingRefundWatch: Watch? { model.watches.first { $0.kind == .refund && $0.transactionID == transaction.id && $0.status.isOpen } }
+    /// Any state, not just open: a charge has one refund watch, and reopening this sheet should find it rather than
+    /// offer to make another.
+    private var existingRefundWatch: Watch? { model.watches.first { $0.kind == .refund && $0.transactionID == transaction.id } }
     private var existingMerchantWatch: Watch? { model.watches.first { $0.kind == .merchant && $0.matcher == transaction.merchantKey && $0.status.isOpen } }
     private var isSpendLike: Bool { kind == .spend || kind == .untracked || kind == .refund }
 

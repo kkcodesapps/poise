@@ -33,3 +33,39 @@ struct TransferDetectorTests {
         #expect(out.allSatisfy { $0.pairID == nil })
     }
 }
+
+@Suite("One row per movement") struct CollapsedFeedTests {
+
+    /// The real shape: Chase shows the money leaving on the 28th, Apple Card shows it arriving on the 27th.
+    private var bothLegs: [Transaction] {
+        TransferDetector.pair([
+            Fix.tx("chase", "chk", "-3694.79", "Apple Card", on: Fix.day(2026, 9, 28)),
+            Fix.tx("card", "card", "3694.79", "Bill Payment", on: Fix.day(2026, 9, 27)),
+        ], accounts: Fix.accounts, calendar: Fix.calendar)
+    }
+
+    @Test func aCardPaymentIsOneRowNotTwo() {
+        let feed = TransferDetector.collapsed(bothLegs)
+        #expect(feed.map(\.id) == ["chase"])                       // the money leaving is what happened
+    }
+
+    @Test func theEnginesStillSeeBothHalves() {
+        // The card's statement balance depends on the payment landing on it, so nothing is removed from the real list.
+        #expect(bothLegs.count == 2)
+        #expect(bothLegs.allSatisfy { $0.kind == .ccPayment && $0.pairID != nil })
+    }
+
+    @Test func aPaymentToACardPoiseCannotSeeStays() {
+        // Only one side is linked, so there's nothing to collapse and the row must survive.
+        let lonely = [Fix.tx("only", "chk", "-500.00", "Amex", on: Fix.day(2026, 9, 28), kind: .ccPayment)]
+        #expect(TransferDetector.collapsed(lonely).map(\.id) == ["only"])
+    }
+
+    @Test func moneyMovedIntoSavingsAlsoShowsOnce() {
+        let moved = TransferDetector.pair([
+            Fix.tx("out", "chk", "-300.00", "To Ally Savings", on: Fix.day(2026, 9, 28)),
+            Fix.tx("in", "sav", "300.00", "Transfer", on: Fix.day(2026, 9, 28)),
+        ], accounts: Fix.accounts, calendar: Fix.calendar)
+        #expect(TransferDetector.collapsed(moved).map(\.id) == ["out"])
+    }
+}

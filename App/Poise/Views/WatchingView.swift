@@ -38,14 +38,23 @@ struct WatchingView: View {
     }
 
     private func list(_ ws: [Watch]) -> some View {
-        Card {
-            ForEach(Array(ws.enumerated()), id: \.element.id) { i, w in
-                WatchRowView(watch: w)
-                    .contextMenu {
-                        if w.status.isOpen { Button("Stop watching", systemImage: "eye.slash") { Task { await model.closeWatch(w) } } }
-                        Button("Remove", systemImage: "trash", role: .destructive) { Task { await model.removeWatch(w) } }
-                    }
-                if i < ws.count - 1 { RowDivider() }
+        // A refund you're owed deserves the whole story — what it was, what was charged, how long it's been. Merchant
+        // and price watches are a single fact each and stay compact.
+        VStack(spacing: Theme.Spacing.s12) {
+            ForEach(ws) { w in
+                if w.kind == .refund, w.status.isOpen {
+                    RefundWatchCard(watch: w)
+                        .contextMenu {
+                            Button("Stop watching", systemImage: "eye.slash") { Task { await model.closeWatch(w) } }
+                            Button("Remove", systemImage: "trash", role: .destructive) { Task { await model.removeWatch(w) } }
+                        }
+                } else {
+                    Card { WatchRowView(watch: w) }
+                        .contextMenu {
+                            if w.status.isOpen { Button("Stop watching", systemImage: "eye.slash") { Task { await model.closeWatch(w) } } }
+                            Button("Remove", systemImage: "trash", role: .destructive) { Task { await model.removeWatch(w) } }
+                        }
+                }
             }
         }
         .padding(.horizontal, Theme.Spacing.s16)
@@ -103,6 +112,83 @@ struct WatchRowView: View {
         }
         .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
         .contentShape(Rectangle())
+    }
+}
+
+/// A refund you're owed, with everything needed to decide whether to chase it.
+struct RefundWatchCard: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.openURL) private var openURL
+    let watch: Watch
+
+    private var charge: PoiseKit.Transaction? { watch.transactionID.flatMap { id in model.transactions.first { $0.id == id } } }
+    private var since: Date { charge?.displayDate ?? watch.createdAt }
+    private var days: Int { Calendar.current.dateComponents([.day], from: since, to: .now).day ?? 0 }
+    private var progress: (status: String, note: String?)? { model.returnProgress(for: watch) }
+    /// The merchant says it's in hand, so it isn't late however long it's been.
+    private var late: Bool { watch.status == .overdue && !model.returnUnderWay(watch) }
+
+    var body: some View {
+        Card(padding: Theme.Spacing.s16) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
+                HStack(spacing: Theme.Spacing.s12) {
+                    IconCircle(symbol: "arrow.uturn.backward", size: 36,
+                               fill: late ? Theme.Status.trackBg : Theme.Accent.subtle,
+                               color: late ? Theme.Status.track : Theme.Accent.default)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(watch.merchant.prettyMerchant).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1)
+                        Text(what).font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    Tag(label: late ? "Overdue" : "Waiting", tone: late ? .track : .accent)
+                }
+                Divider().overlay(Theme.Border.subtle)
+                fact("Charged", chargeLine, tone: Theme.Text.secondary)
+                fact("Waiting", waitLine, tone: late ? Theme.Status.track : Theme.Text.secondary)
+                if let progress {
+                    // Amazon's own words, so a refund in hand doesn't read like one gone quiet.
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(progress.status).font(Theme.Font.captionStrong).foregroundStyle(Theme.Status.good)
+                        if let note = progress.note {
+                            Text(note).font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack(spacing: Theme.Spacing.s8) {
+                    Button("It arrived") { Task { await model.markWatchArrived(watch) } }.buttonStyle(.secondaryCompact)
+                    if let ref = charge?.orderRef {
+                        Button("See the order") { openURL(AmazonOrders.url(for: ref)) }.buttonStyle(.ghost)
+                    }
+                }
+            }
+        }
+    }
+
+    private func fact(_ label: String, _ value: String, tone: Color) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label).font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+            Spacer(minLength: 8)
+            Text(value).font(Theme.Font.captionStrong).foregroundStyle(tone).multilineTextAlignment(.trailing)
+        }
+    }
+
+    /// What the money was for: the thing itself when Poise knows it, the category when it doesn't.
+    private var what: String {
+        guard let charge else { return watch.note ?? "Waiting for a refund" }
+        return model.contents(of: charge) ?? model.categories.name(charge.categoryID)
+    }
+
+    private var chargeLine: String {
+        guard let charge else { return (watch.expectedAmount ?? 0).money2 }
+        let account = model.accounts.first { $0.id == charge.accountID }
+        let card = account.map { a in a.mask.map { "\(a.name) ···\($0)" } ?? a.name } ?? ""
+        return "\(charge.magnitude.money2) · \(charge.displayDate.formatted(.dateTime.month(.abbreviated).day()))\(card.isEmpty ? "" : " · \(card)")"
+    }
+
+    private var waitLine: String {
+        let age = days == 0 ? "Since today" : "\(days) day\(days == 1 ? "" : "s")"
+        return "\(age) · expected within \(watch.nudgeDays)"
     }
 }
 

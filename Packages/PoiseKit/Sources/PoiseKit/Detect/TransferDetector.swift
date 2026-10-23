@@ -33,6 +33,22 @@ public enum TransferDetector {
         return result
     }
 
+    /// One row per movement, for a feed.
+    ///
+    /// Money moved between two accounts the user owns arrives twice — leaving one and landing in the other — and both
+    /// halves are real rows from two banks. Showing both reads as paying twice. The outflow is the half that describes
+    /// what happened ("Apple Card −$3,694.79"), so the mirror is dropped, and only when its partner is actually here:
+    /// if the other side isn't linked there is only one row and it stays.
+    ///
+    /// Engines keep the full list — a card's statement balance needs the payment landing on it.
+    public static func collapsed(_ transactions: [Transaction]) -> [Transaction] {
+        let present = Set(transactions.map(\.id))
+        return transactions.filter { t in
+            guard t.kind == .ccPayment || t.kind == .transfer, !t.isOutflow, let partner = t.pairID else { return true }
+            return !present.contains(partner)
+        }
+    }
+
     static func days(from a: Date, to b: Date, calendar: Calendar) -> Int {
         calendar.dateComponents([.day], from: calendar.startOfDay(for: a), to: calendar.startOfDay(for: b)).day ?? 0
     }
