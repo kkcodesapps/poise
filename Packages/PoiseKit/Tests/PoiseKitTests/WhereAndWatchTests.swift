@@ -91,3 +91,51 @@ struct WhereAndWatchTests {
         #expect(WatchEngine.evaluate([quiet], transactions: rows, now: now, calendar: Fix.calendar)[0].status == Watch.Status.watching)
     }
 }
+
+@Suite("A refund watch closes on the right refund") struct RefundWatchTests {
+    private let charge = Fix.tx("charge", "card", "-76.85", "Amazon", on: Fix.day(2026, 9, 15))
+
+    private func watch(status: Watch.Status = .waiting, resolved: String? = nil) -> Watch {
+        Watch(id: "w", kind: .refund, transactionID: "charge", merchant: "Amazon", matcher: "amazon",
+              expectedAmount: Fix.money("76.85"), nudgeDays: 14, status: status,
+              createdAt: Fix.day(2026, 9, 15), resolvedAt: resolved == nil ? nil : Fix.day(2026, 9, 18),
+              resolvedTransactionID: resolved)
+    }
+
+    @Test func aBiggerRefundFromTheSameShopIsNotIt() {
+        // The real case: $108.20 came back for something else entirely and closed a watch waiting on $76.85.
+        let other = Fix.tx("other", "card", "108.20", "Amazon", on: Fix.day(2026, 9, 18), kind: .refund)
+        let out = WatchEngine.evaluate([watch()], transactions: [charge, other], now: Fix.day(2026, 9, 20), calendar: Fix.calendar)
+        #expect(out[0].status == .waiting)
+        #expect(out[0].resolvedTransactionID == nil)
+    }
+
+    @Test func theRefundForTheRightAmountCloses() {
+        let right = Fix.tx("right", "card", "76.85", "Amazon", on: Fix.day(2026, 9, 18), kind: .refund)
+        let out = WatchEngine.evaluate([watch()], transactions: [charge, right], now: Fix.day(2026, 9, 20), calendar: Fix.calendar)
+        #expect(out[0].status == .arrived)
+        #expect(out[0].resolvedTransactionID == "right")
+    }
+
+    @Test func aPartialRefundLeavesItOpen() {
+        // Returning one item of several pays back less; the rest is still owed, so the watch stays.
+        let part = Fix.tx("part", "card", "40.00", "Amazon", on: Fix.day(2026, 9, 18), kind: .refund)
+        #expect(WatchEngine.evaluate([watch()], transactions: [charge, part], now: Fix.day(2026, 9, 20), calendar: Fix.calendar)[0].status == .waiting)
+    }
+
+    @Test func oneClosedOnTheWrongRefundOpensItselfAgain() {
+        // Repairs what the old rule did: the watch says arrived against a refund that was never for it.
+        let other = Fix.tx("other", "card", "108.20", "Amazon", on: Fix.day(2026, 9, 18), kind: .refund)
+        let out = WatchEngine.evaluate([watch(status: .arrived, resolved: "other")], transactions: [charge, other],
+                                 now: Fix.day(2026, 10, 3), calendar: Fix.calendar)
+        #expect(out[0].status == .overdue)                      // reopened, and by now past its window
+        #expect(out[0].resolvedTransactionID == nil)
+    }
+
+    @Test func oneClosedOnTheRightRefundStaysClosed() {
+        let right = Fix.tx("right", "card", "76.85", "Amazon", on: Fix.day(2026, 9, 18), kind: .refund)
+        let out = WatchEngine.evaluate([watch(status: .arrived, resolved: "right")], transactions: [charge, right],
+                                 now: Fix.day(2026, 10, 3), calendar: Fix.calendar)
+        #expect(out[0].status == .arrived && out[0].resolvedTransactionID == "right")
+    }
+}

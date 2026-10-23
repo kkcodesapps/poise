@@ -28,8 +28,30 @@ public struct Watch: Identifiable, Hashable, Codable, Sendable {
 }
 
 public enum WatchEngine {
+    /// Whether a refund is *the* refund a watch is waiting for.
+    ///
+    /// The amount has to match, not merely clear it. The first version accepted anything at least as large, so at a
+    /// merchant that refunds often — Amazon — a $108.20 refund closed a watch waiting on $76.85, and the money never
+    /// came back. A refund smaller than expected is a partial one and leaves the watch open, which is the truth.
+    static func isTheRefund(_ t: Transaction, for w: Watch) -> Bool {
+        guard t.kind == .refund, t.merchantKey == w.matcher else { return false }
+        guard let expected = w.expectedAmount else { return true }
+        return abs(t.magnitude - expected) <= Decimal(0.01)
+    }
+
     /// Re-derives every open watch's status from the transactions. Closed / resolved watches are left alone.
     public static func evaluate(_ watches: [Watch], transactions: [Transaction], now: Date, calendar: Calendar = .current) -> [Watch] {
+        // A refund that was wrongly accepted is re-checked and let go of, so a watch closed by the wrong refund opens
+        // itself again rather than sitting there claiming money that never came back.
+        let watches = watches.map { w -> Watch in
+            guard w.kind == .refund, w.status == .arrived, let id = w.resolvedTransactionID else { return w }
+            guard let match = transactions.first(where: { $0.id == id }), isTheRefund(match, for: w) else {
+                var out = w
+                out.status = .waiting; out.resolvedAt = nil; out.resolvedTransactionID = nil
+                return out
+            }
+            return w
+        }
         var used = Set(watches.compactMap(\.resolvedTransactionID))
         return watches.map { w in
             guard w.status.isOpen else { return w }
@@ -37,7 +59,7 @@ public enum WatchEngine {
             let since = w.transactionID.flatMap { id in transactions.first { $0.id == id }?.displayDate } ?? w.createdAt
             switch w.kind {
             case .refund:
-                let match = transactions.filter { $0.kind == .refund && $0.merchantKey == w.matcher && $0.displayDate >= since && !used.contains($0.id) && $0.magnitude >= (w.expectedAmount ?? 0) - Decimal(0.01) }
+                let match = transactions.filter { isTheRefund($0, for: w) && $0.displayDate >= since && !used.contains($0.id) }
                     .sorted { $0.displayDate < $1.displayDate }.first
                 if let match {
                     used.insert(match.id); out.status = .arrived; out.resolvedAt = match.displayDate; out.resolvedTransactionID = match.id

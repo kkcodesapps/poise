@@ -97,3 +97,64 @@ Sponsored
         #expect(detail.items.isEmpty && detail.total == nil)
     }
 }
+
+@Suite("The day it was bought") struct AmazonPlacedDateTests {
+
+    @Test func readsTheDayTheOrderWasPlaced() {
+        // The real line, with the order number trailing it on the same line.
+        let page = """
+        Order Details
+        Order placed September 5, 2026  Order # 113-9793553-2661015
+        Grand Total:
+        $143.87
+        Delivered September 6
+        Some product name that is long enough
+        Sold by: A Seller
+        $143.87
+        """
+        let detail = AmazonOrderDetails.parse(page, orderID: "113-9793553-2661015", calendar: Fix.calendar)
+        #expect(detail.placed == Fix.calendar.startOfDay(for: Fix.day(2026, 9, 5)))
+    }
+
+    @Test func anOrderPageWithoutThatLineHasNoDate() {
+        #expect(AmazonOrderDetails.parse("Order Summary\nGrand Total:\n$1.00", orderID: "x", calendar: Fix.calendar).placed == nil)
+    }
+}
+
+@Suite("Where a return has got to") struct AmazonReturnStatusTests {
+    private let page = """
+    Order placed September 14, 2026  Order # 113-0493069-5619426
+    Grand Total:
+    $76.85
+    Return started
+    Your refund will be processed when we receive your item.
+    Tapo ColorPro Wi-Fi Outdoor Camera, PoE, Plug-in, 2K QHD
+    Sold by: Amazon.com
+    $70.99
+    """
+
+    @Test func readsAReturnAmazonHasAcknowledged() {
+        let detail = AmazonOrderDetails.parse(page, orderID: "113-0493069-5619426", calendar: Fix.calendar)
+        #expect(detail.returnStatus == "Return started")
+        #expect(detail.returnNote == "Your refund will be processed when we receive your item.")
+        #expect(detail.returnInProgress)
+    }
+
+    @Test func stillFindsWhatWasInIt() {
+        // The status lines sit where a product title would; they mustn't be mistaken for one.
+        let detail = AmazonOrderDetails.parse(page, orderID: "x", calendar: Fix.calendar)
+        #expect(detail.items.count == 1)
+        #expect(detail.items[0].name.hasPrefix("Tapo ColorPro"))
+    }
+
+    @Test func anOrderThatWasNeverReturnedSaysNothing() {
+        let plain = """
+        Order placed September 5, 2026  Order # 113-0000000-0000000
+        Delivered September 6
+        Some product with a long enough name
+        Sold by: A Seller
+        $10.00
+        """
+        #expect(AmazonOrderDetails.parse(plain, orderID: "x", calendar: Fix.calendar).returnStatus == nil)
+    }
+}
