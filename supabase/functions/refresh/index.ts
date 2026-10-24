@@ -3,6 +3,7 @@ import { plaid, PlaidError, type PlaidAccount } from "../_shared/plaid.ts";
 import { decrypt } from "../_shared/crypto.ts";
 import { admin, userFrom } from "../_shared/db.ts";
 import { upsertAccounts, type ItemRow } from "../_shared/sync.ts";
+import { updateStatements } from "../_shared/liabilities.ts";
 
 // On-demand freshness: fresh balances now, and a provider-side transaction refresh (the webhook brings the rows).
 // Rate-limited per item so foreground / pull-to-refresh can't run up the bill.
@@ -29,17 +30,6 @@ async function backfillLogos(db: ReturnType<typeof admin>, item: ItemRow, token:
     }
     await db.from("items").update({ logos_backfilled_at: new Date().toISOString() }).eq("id", item.id);
   } catch { /* try again next refresh */ }
-}
-
-/** Card statements from Plaid, where the Item has the liabilities product. Items linked without it just skip. */
-async function updateStatements(db: ReturnType<typeof admin>, item: ItemRow, token: string) {
-  try {
-    const res = await plaid<Liabilities>("/liabilities/get", { access_token: token });
-    for (const c of res.liabilities?.credit ?? []) {
-      await db.from("accounts").update({ statement_due: c.next_payment_due_date, statement_amount: c.last_statement_balance, minimum_due: c.minimum_payment_amount })
-        .eq("item_id", item.id).eq("provider_account_id", c.account_id);
-    }
-  } catch { /* PRODUCTS_NOT_SUPPORTED / not consented: the card page just won't show a statement */ }
 }
 
 Deno.serve(async (req) => {
