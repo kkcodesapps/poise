@@ -55,6 +55,7 @@ final class AmazonSource: NSObject {
     private enum Key {
         static let connected = "amazonConnected", checkedAt = "amazonCheckedAt", lapsed = "amazonLapsed"
         static let ordersRead = "amazonOrdersRead", pagesRead = "amazonPagesRead", reachedBack = "amazonReachedBack"
+        static let unreadable = "amazonUnreadable"
     }
 
     /// What the last read actually saw. Kept because "it found nothing" and "it found plenty and matched nothing" are
@@ -67,6 +68,14 @@ final class AmazonSource: NSObject {
     private(set) var pagesRead: Int {
         get { UserDefaults.standard.integer(forKey: Key.pagesRead) }
         set { UserDefaults.standard.set(newValue, forKey: Key.pagesRead) }
+    }
+
+    /// True when a page plainly had orders on it that Poise couldn't read — which means Amazon has changed the page,
+    /// not that there was nothing to find. Without this the two look identical from the outside, and a redesign goes
+    /// unnoticed until someone spots months of charges with no order against them.
+    private(set) var pageUnreadable: Bool {
+        get { UserDefaults.standard.bool(forKey: Key.unreadable) }
+        set { UserDefaults.standard.set(newValue, forKey: Key.unreadable) }
     }
 
     /// The oldest order the last read got to. If this stops short of the oldest charge, the read ran out of road.
@@ -116,8 +125,19 @@ final class AmazonSource: NSObject {
     /// Puts the payments page in front of the user. Amazon redirects to its own sign-in when the session is gone, and
     /// back here once they're through it — so this is both the way in and the test of whether we're in.
     func start() {
-        webView.load(URLRequest(url: startURL, cachePolicy: .reloadIgnoringLocalCacheData))
+        // If it was an order page Amazon stopped at, that is the page the user has to get past — the payments page
+        // may well open without asking anything, which would close the sheet having fixed nothing.
+        let url = challengeOrder.map(Self.orderURL) ?? startURL
+        webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
     }
+
+    /// The order whose page Amazon wouldn't show without a sign-in or a check, until one is read again.
+    private(set) var challengeOrder: String? {
+        get { UserDefaults.standard.string(forKey: "amazonChallengeOrder") }
+        set { UserDefaults.standard.set(newValue, forKey: "amazonChallengeOrder") }
+    }
+
+    static func orderURL(_ id: String) -> URL { URL(string: "https://www.amazon.com/your-orders/order-details?orderID=\(id)")! }
 
     /// True while Amazon is still asking who they are.
     ///
@@ -145,7 +165,11 @@ final class AmazonSource: NSObject {
     func read(back earliest: Date?, maxPages: Int = 3, onPage: (@MainActor (Int, Date?) -> Void)? = nil) async throws -> [AmazonOrder] {
         await useTextOnly()
         try await load(AmazonOrders.transactionsPage)
-        guard await signedIn() else { hasLapsed = true; lastChecked = .now; throw Failure.signedOut }
+        switch await landing() {
+        case .signIn: hasLapsed = true; lastChecked = .now; throw Failure.signedOut
+        case .unknown: throw Failure.timedOut                       // slow or odd page: try again later, don't cry wolf
+        case .payments: break
+        }
 
         var orders: [AmazonOrder] = []
         var seen = Set<String>()
@@ -172,6 +196,13 @@ final class AmazonSource: NSObject {
             pages = page + 1
             // Keyed on the whole listing: the same order number appears again when it's refunded, and both lines are real.
             let batch = AmazonOrders.parse(text)
+            // Order numbers on the page but nothing parsed out of it: the page has changed shape.
+            if batch.isEmpty, text.contains("Order #") {
+                pageUnreadable = true
+                log.error("amazon page has orders but none could be read — layout changed")
+            } else if !batch.isEmpty {
+                pageUnreadable = false
+            }
             for order in batch {
                 let listing = "\(order.id)|\(order.amount)|\(order.date.timeIntervalSince1970)"
                 guard !seen.contains(listing) else { continue }
@@ -185,8 +216,12 @@ final class AmazonSource: NSObject {
             try? await Task.sleep(for: .milliseconds(600))          // a beat between pages; Amazon throttles a gallop
             guard await clickNextPage() else { break }
         }
+        // A walk that read nothing and ended on a page we don't recognise is a session that's gone.
         guard !bounced || !orders.isEmpty else { hasLapsed = true; lastChecked = .now; throw Failure.signedOut }
-        hasLapsed = bounced                                     // read what we could, but say the session is done
+        // A walk that read orders and *then* hit something else has simply reached the end of the list — Amazon's
+        // last page is not the payments page. Calling that a dropped session told the user to sign in again and, far
+        // worse, made the phase that reads what was in each order give up before it started.
+        hasLapsed = false
         lastChecked = .now
         // What's reported is the deepest read, not the latest. Order numbers already written stay written, so a later
         // run that sees less has lost nothing — and shouldn't look like it has.
@@ -216,17 +251,51 @@ final class AmazonSource: NSObject {
     /// rather than the lot — Amazon throttles a gallop and there is no bulk view of this.
     func readItems(for orderID: String) async throws -> AmazonOrderDetail? {
         await useTextOnly()
-        try await load(AmazonOrders.url(for: orderID))
-        let text = await settledText(differentFrom: "")
-        let atSignIn = await isAtSignIn()
+        // Straight to where Amazon now keeps order pages, rather than through the old address and its redirect.
+        try await load(Self.orderURL(orderID))
+        // Wait for something we recognise — the order itself, or a sign-in — not merely for the text to stop
+        // changing, which a page in between can do for a second.
+        var text = ""
+        var readerAtSignIn = false
+        for _ in 0 ..< 40 {
+            text = await innerText()
+            readerAtSignIn = await readerIsAtSignIn()
+            if isOrderPage(text) && text.contains("Sold by") { break }
+            if readerAtSignIn { break }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
         var result: AmazonOrderDetail?
-        if let text, isOrderPage(text) {
+        if isOrderPage(text) {
             let detail = AmazonOrderDetails.parse(text, orderID: orderID)
             result = detail.items.isEmpty ? nil : detail
+            if result == nil { lastItemFailure = "order page, nothing on it read" }
+        } else if readerAtSignIn {
+            let address = reader.url?.absoluteString ?? ""
+            let captcha = address.contains("validateCaptcha") || text.contains("Enter the characters you see")
+            // Which of Amazon's checks it was, and where — a step-up sign-in and a robot check need different things.
+            lastItemFailure = (captcha ? "Amazon showed a robot check" : "Amazon wants a sign-in for order pages")
+                + " (\(reader.url?.path ?? "?")\(address.contains("max_auth_age") ? ", fresh sign-in required" : ""))"
+            challengeOrder = orderID
+        } else {
+            let path = reader.url?.path ?? "no address"
+            lastItemFailure = "not an order page (\(path), \(text.count) chars)"
         }
         await releaseReader()                                       // before returning, so the next order starts clean
-        if result == nil, atSignIn { hasLapsed = true; throw Failure.signedOut }
+        // The reader is the one that opened the order, so it's the one that says whether Amazon wants a sign-in.
+        if result == nil, readerAtSignIn { hasLapsed = true; throw Failure.signedOut }
+        if result != nil { challengeOrder = nil }
         return result
+    }
+
+    /// Why the last order that couldn't be read couldn't be — so a failure says what it was instead of being a zero.
+    private(set) var lastItemFailure: String?
+
+    /// The same test as `isAtSignIn`, asked of the reader rather than the visible view.
+    private func readerIsAtSignIn() async -> Bool {
+        let url = reader.url?.absoluteString ?? ""
+        if url.contains("/ap/") || url.contains("signin") || url.contains("validateCaptcha") { return true }
+        let js = "!!document.querySelector('input[type=password], input[name=email], [id^=ap_email], [id^=ap_password], #auth-captcha-guess, input[name=otpCode], form[name=signIn]')"
+        return ((try? await reader.evaluateJavaScript(js)) as? Bool) ?? false
     }
 
     private func isOrderPage(_ text: String) -> Bool {
@@ -238,12 +307,22 @@ final class AmazonSource: NSObject {
         text.contains("Transactions") && !text.contains("Enter mobile number or email") && !text.contains("Sign in to continue")
     }
 
-    /// True once the payments page itself is on screen — the heading is the proof, not the URL, because Amazon will
-    /// happily redirect a signed-out request somewhere that looks fine.
-    func signedIn() async -> Bool {
-        guard await !isAtSignIn() else { return false }
-        let text = await innerText()
-        return text.contains("Transactions") && !text.contains("Enter mobile number or email")
+    private enum Landing { case payments, signIn, unknown }
+
+    /// Where the reader ended up after asking for the payments page, waited for rather than read at once.
+    ///
+    /// Asked of the reader, which is the view that just loaded the page. The visible view has loaded nothing on a cold
+    /// launch, and `isAtSignIn` counts a view with no page as still signing in — so asking it called every check after
+    /// a restart a dropped session. And only a sign-in form counts as signed out: a page still drawing, or one Amazon
+    /// served slowly, is a check to try again, not a reason to tell the user to sign in.
+    private func landing() async -> Landing {
+        for _ in 0 ..< 30 {
+            if await readerIsAtSignIn() { return .signIn }
+            let text = await innerText()
+            if isPaymentsPage(text) { return .payments }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        return .unknown
     }
 
     /// Forgets the session: Amazon's cookies and storage for this app, and the local flags. The order numbers already

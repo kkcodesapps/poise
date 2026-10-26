@@ -59,7 +59,15 @@ final class AppModel {
     var whereAnchor: Date = .now
     var whereWindow: DateInterval = Periods.window(.month, containing: .now)
     var showWatching = false
+    #if DEBUG
+    /// Debug only: an account page to open once Settings is up.
+    var openAccount: String?
+    #endif
     var profilePath: [String] = []
+    /// The card whose page Home has open, if any.
+    var openCard: String?
+    /// The card whose Look & name sheet is up, from Home's press-and-hold or the card's page.
+    var lookCard: String?
     var lastSync: Date?
     var institutions: [String] = []
     var relinkNeeded: [Repository.Item] = []
@@ -91,6 +99,11 @@ final class AppModel {
     /// The second phase of a check: reading what was in each order. Zero when that phase isn't running.
     var amazonItemsTotal = 0
     var amazonItemsDone = 0
+    /// What the last item phase managed, so a phase that quietly does nothing can be seen rather than guessed at.
+    var amazonItemsRead = 0
+    var amazonItemsWanted = 0
+    /// Why the last one that failed did.
+    var amazonItemsFailure: String?
     var amazonOrdersRead = 0
     var amazonPagesRead = 0
     /// The oldest order the last read reached. Short of the oldest charge means it ran out of road, not out of matches.
@@ -135,6 +148,7 @@ final class AppModel {
     /// so an app left open across midnight doesn't keep calling yesterday today.
     private(set) var today = Calendar.current.startOfDay(for: .now)
     private var midnight: Task<Void, Never>?
+    private var lateDelivery: Task<Void, Never>?
 
     /// Every stream the detector found, ended ones included; `streams` is the live subset the engines use.
     var allStreams: [RecurringStream] = []
@@ -179,6 +193,7 @@ final class AppModel {
     private var linker: BankLinker?
     private let wallet = WalletSource(client: Backend.client)
     private var raw: [PoiseKit.Transaction] = []
+    private var logos: [String: String] = [:]
     private(set) var acknowledged: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "acknowledgedInsights") ?? [])
 
     var hasLinkedBank: Bool { !accounts.isEmpty || !hiddenAccounts.isEmpty }
@@ -209,7 +224,7 @@ final class AppModel {
     /// Errors worth an alert. A cancelled request — the pull ended, the view went away, the app backgrounded — isn't one.
     private func report(_ error: Error) {
         if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
-        report(error)
+        errorMessage = error.localizedDescription
     }
 
     /// Where: the current window's breakdown, recomputed on demand.
@@ -218,6 +233,24 @@ final class AppModel {
         return CategoryBreakdown.compute(transactions: transactions.filter { !$0.excluded }, period: wherePeriod, window: whereWindow, now: .now, categories: categories)
     }
     var whereIsCurrent: Bool { whereWindow.contains(.now) }
+
+    /// The cards, in the order Home lays them out: the one carrying the most first.
+    var cards: [Account] { accounts.filter { $0.role == .credit }.sorted { ($0.owed, $0.name) > ($1.owed, $1.name) } }
+    /// Everything that happened on one account — the raw rows, for the breakdown, and the feed's, for the list.
+    func transactions(on accountID: String) -> [PoiseKit.Transaction] { transactions.filter { $0.accountID == accountID && !$0.excluded } }
+    /// Where, for one card: the same breakdown over only its rows, in Where's own period and window.
+    func breakdown(account accountID: String) -> Breakdown {
+        CategoryBreakdown.compute(transactions: transactions(on: accountID), period: wherePeriod, window: whereWindow, now: .now, categories: categories)
+    }
+    /// What went on a card this calendar month, whatever Where is showing — the figure on its tile.
+    func monthSpend(account accountID: String) -> Decimal {
+        CategoryBreakdown.compute(transactions: transactions(on: accountID), period: .month, window: Periods.window(.month, containing: .now), now: .now, categories: categories).total
+    }
+    /// The whole of last calendar month on a card — what its tile measures this month against.
+    func lastMonthSpend(account accountID: String) -> Decimal {
+        let w = Periods.shift(Periods.window(.month, containing: .now), .month, by: -1)
+        return CategoryBreakdown.compute(transactions: transactions(on: accountID), period: .month, window: w, now: .now, categories: categories).total
+    }
     func stepWhere(_ n: Int) { let w = Periods.shift(whereWindow, wherePeriod, by: n); if w.start <= .now { whereWindow = w; whereAnchor = w.start } }
 
     /// Launch: sign in, first load, settle the splash (never under half a second, never over eight), then the extras.
@@ -270,6 +303,23 @@ final class AppModel {
             }
             if args.contains("-review") { showReview = true }
             if args.contains("-watching") { showWatching = true }
+            if args.contains("-amazon-progress") { amazonReading = true; amazonItemsTotal = 71; amazonItemsDone = 30 }
+            // `-card <name>` opens a card's page from Home, so it can be looked at without tapping through; add `-look`
+            // for its Look & name sheet instead.
+            // Waits for the accounts to arrive: at launch they usually haven't yet.
+            if let i = args.firstIndex(of: "-card"), i + 1 < args.count {
+                let want = args[i + 1].lowercased()
+                Task { @MainActor in
+                    for _ in 0 ..< 40 {
+                        if let a = accounts.first(where: { $0.role == .credit && $0.name.lowercased().contains(want) }) {
+                            tab = .home
+                            if args.contains("-look") { lookCard = a.id } else { openCard = a.id }
+                            return
+                        }
+                        try? await Task.sleep(for: .milliseconds(500))
+                    }
+                }
+            }
             if let i = args.firstIndex(of: "-horizon"), i + 1 < args.count, let d = Int(args[i + 1]) { horizonDays = d }
             // `-amazon [connect|signin|connection]` opens the Amazon screens (screenshots, checks).
             if let i = args.firstIndex(of: "-amazon") {
@@ -302,6 +352,9 @@ final class AppModel {
                 if let ins = insights.first(where: { $0.kind == kind }) { Task { try? await Task.sleep(for: .seconds(1)); open(ins) } }   // after the splash fade
             }
             if args.contains("-open-stream"), let s = streams.first(where: { $0.kind == .subscription }) { selectedStream = s }
+            // `-open-stream-txn` opens the newest charge of the first subscription (the sheet's "It repeats" section).
+            if args.contains("-open-stream-txn"), let s = streams.first(where: { $0.kind == .subscription }),
+               let t = transactions.first(where: { $0.id == s.transactionIDs.last }) { Task { try? await Task.sleep(for: .seconds(1)); selectedTransaction = t } }
             // `-open-ended` opens the first cancelled/ended subscription (the muted sheet states).
             if args.contains("-open-ended"), let s = endedStreams.first { Task { try? await Task.sleep(for: .seconds(1)); selectedStream = s } }
             // `-open-merchant` opens the merchant page for the first spend charge; `-since` the since-you-last-looked sheet.
@@ -488,7 +541,8 @@ final class AppModel {
             if !fresh.isEmpty { recompute() }
             amazonOrdersRead = source.ordersRead; amazonPagesRead = source.pagesRead; amazonReachedBack = source.reachedBack
             amazonConnected = true; source.isConnected = true
-            // A read can end early because Amazon asked for a fresh sign-in; keep what it got and say so.
+            // Orders came back, so the session works. Anything that goes wrong from here is found by the phase that
+            // reads them, which can tell a sign-in page from the end of a list.
             amazonLapsed = source.hasLapsed; amazonCheckedAt = source.lastChecked
             let saved = await repository.setOrderRefs(fresh)
             // Then the second phase, with the session warm: what was in each of them. A check the user asked for reads
@@ -554,20 +608,23 @@ final class AppModel {
     }
 
     /// Opens one order's page and reads its contents.
-    func fetchItems(ref: String) async {
-        guard needsReading(ref), !fetchingItems.contains(ref), amazonConnected, !amazonLapsed else { return }
+    @discardableResult
+    func fetchItems(ref: String) async -> Bool {
+        guard needsReading(ref), !fetchingItems.contains(ref), amazonConnected, !amazonLapsed else { return false }
         fetchingItems.insert(ref); defer { fetchingItems.remove(ref) }
         do {
-            guard let detail = try await AmazonSource.shared.readItems(for: ref) else { return }
+            guard let detail = try await AmazonSource.shared.readItems(for: ref) else { return false }
             orderItems[ref] = detail
             recompute()
-            guard let userID = try? await Backend.client.auth.session.user.id.uuidString else { return }
+            guard let userID = try? await Backend.client.auth.session.user.id.uuidString else { return true }
             try await repository.save(detail, userID: userID)
+            return true
         } catch AmazonSource.Failure.signedOut {
             amazonLapsed = true
         } catch {
             log.error("amazon items failed for \(ref, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
+        return false
     }
 
     /// An order wants reading if it has never been read, or was read before Poise started keeping the day it was
@@ -587,7 +644,10 @@ final class AppModel {
     /// its own progress rather than pretending to be instant. A pause between orders keeps the site from throttling.
     /// `limit` caps it for the background wake, which only has seconds.
     func fetchAllItems(limit: Int? = nil) async {
-        guard amazonConnected, !amazonLapsed else { return }
+        guard amazonConnected, !amazonLapsed else {
+            log.error("amazon item phase skipped — connected=\(self.amazonConnected, privacy: .public) lapsed=\(self.amazonLapsed, privacy: .public)")
+            return
+        }
         var newest: [String: Date] = [:]
         for t in raw {
             guard let ref = t.orderRef, needsReading(ref) else { continue }
@@ -599,12 +659,17 @@ final class AppModel {
 
         amazonItemsTotal = refs.count; amazonItemsDone = 0
         defer { amazonItemsTotal = 0; amazonItemsDone = 0 }
+        var read = 0
         for ref in refs {
             if Task.isCancelled || amazonLapsed { break }
-            await fetchItems(ref: ref)
+            if await fetchItems(ref: ref) { read += 1 }
             amazonItemsDone += 1
-            try? await Task.sleep(for: .milliseconds(400))
+            try? await Task.sleep(for: .milliseconds(1500))         // a person's pace, not a crawler's
         }
+        amazonItemsRead = read
+        amazonItemsWanted = refs.count
+        amazonItemsFailure = read < refs.count ? AmazonSource.shared.lastItemFailure : nil
+        log.info("amazon items: read \(read, privacy: .public) of \(refs.count, privacy: .public)")
     }
 
     /// Starts the full read and lets go of it. Signing in is the only part that needs the user; everything after is
@@ -676,7 +741,7 @@ final class AppModel {
         do {
             let linker = self.linker ?? BankLinker(client: Backend.client)
             self.linker = linker
-            if try await linker.link(relink: item.id) != nil { await refresh(trigger: "relink") }
+            if try await linker.link(relink: item.id) != nil { await refresh(trigger: "relink", force: true) }
         } catch { report(error) }
     }
 
@@ -688,7 +753,15 @@ final class AppModel {
         do {
             let linker = self.linker ?? BankLinker(client: Backend.client)
             self.linker = linker
-            if try await linker.link(relink: item.id, consent: true) != nil { await refresh(trigger: "consent") }
+            guard try await linker.link(relink: item.id, consent: true) != nil else { return }
+            await refresh(trigger: "consent", force: true)
+            // Plaid can take a moment to attach a product it has only just been granted, and the first read after
+            // Allow often still says it isn't permitted. One quiet retry turns "nothing happened" into the due dates
+            // appearing by themselves.
+            if statementConsentNeeded.contains(where: { $0.id == item.id }) {
+                try? await Task.sleep(for: .seconds(4))
+                await refresh(trigger: "consent-retry", force: true)
+            }
         } catch { report(error) }
     }
 
@@ -807,23 +880,63 @@ final class AppModel {
         }
     }
 
-    /// Foreground / pull-to-refresh: fresh balances now; new bank transactions arrive by webhook and a later reload.
+    /// Foreground / pull-to-refresh: fresh balances now, and the banks asked for anything new.
     /// Wallet has no webhook, so its changes are read and sent right here.
-    func refresh(trigger: String = "pull") async {
+    /// `force` skips the per-bank rate limit. Anything the user just did — repairing a login, allowing a product — has
+    /// to take effect now; waiting out the limit is what made allowing card statements feel like it hadn't worked.
+    func refresh(trigger: String = "pull", force: Bool = false) async {
         #if DEBUG
         // `-slow-refresh` holds a pull open the way a real sync does, so layout bugs that only appear during it show up.
         if ProcessInfo.processInfo.arguments.contains("-slow-refresh") { try? await Task.sleep(for: .seconds(4)) }
         #endif
-        async let banks: Void = refreshBanks(trigger: trigger)
-        async let walletChanged = syncWallet()
-        async let amazon = syncAmazonIfDue(notBefore: 2 * 60, maxPages: 3, items: 8)
-        _ = await (banks, walletChanged, amazon)
+        let before = try? await repository.bankSyncedAt()
+        let asked = await refreshBanks(trigger: trigger, force: force)
+        // The pull lets go as soon as what's already stored is on screen: the hourly refresh keeps that within the
+        // hour. What the banks send now lands a few seconds later through their webhooks — Chase in about five, Barclays
+        // in about twenty — and each one slides in as it arrives. Wallet and Amazon do the same on their own time.
         await reload()
+        if asked { followDeliveries(after: before) }
+        Task { if await syncWallet() { await reload() } }
+        Task { if await syncAmazonIfDue(notBefore: 2 * 60, maxPages: 3, items: 8) > 0 { await reload() } }
     }
 
-    private func refreshBanks(trigger: String) async {
-        struct Body: Encodable { let trigger: String }
-        _ = try? await Backend.client.functions.invoke("refresh", options: FunctionInvokeOptions(body: Body(trigger: trigger)))
+    /// iOS's wake, about once an hour: ask the banks, give their webhooks a moment, and leave the newest snapshot cached,
+    /// so the next open already has it and the next pull has little left to fetch.
+    func backgroundRefresh() async {
+        // Only with the session already on this phone. `ensureSession` would sign in someone new if the keychain
+        // couldn't be read, and a locked phone is exactly when it can't.
+        guard (try? await Backend.client.auth.session) != nil else { return }
+        let before = try? await repository.bankSyncedAt()
+        if await refreshBanks(trigger: "background") {
+            let end = ContinuousClock.now + .seconds(20)
+            while ContinuousClock.now < end, !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                if let at = try? await repository.bankSyncedAt(), at > (before ?? .distantPast) { break }
+            }
+        }
+        _ = await reload(retry: false)
+    }
+
+    /// True if any bank was actually asked; ones refreshed in the last 15 minutes are skipped and send nothing.
+    private func refreshBanks(trigger: String, force: Bool = false) async -> Bool {
+        struct Body: Encodable { let trigger: String; let force: Bool }
+        struct Result: Decodable { let results: [String: String] }
+        let r: Result? = try? await Backend.client.functions.invoke("refresh", options: FunctionInvokeOptions(body: Body(trigger: trigger, force: force)))
+        return r?.results.values.contains("refreshed") ?? false
+    }
+
+    /// Reloads each time a bank delivers, for a minute after it was asked. Banks answer one by one, seconds apart.
+    private func followDeliveries(after before: Date?) {
+        lateDelivery?.cancel()
+        lateDelivery = Task { [weak self] in
+            var last = before ?? .distantPast
+            let end = ContinuousClock.now + .seconds(60)
+            while ContinuousClock.now < end {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self, !Task.isCancelled else { return }
+                if let at = try? await self.repository.bankSyncedAt(), at > last { last = at; await self.reload() }
+            }
+        }
     }
 
     // MARK: corrections
@@ -1028,6 +1141,26 @@ final class AppModel {
 
     func isCancelled(_ s: RecurringStream) -> Date? { settings.cancelledStreams[s.id] }
 
+    /// The repeating stream a charge belongs to, if it belongs to one — a stream filed as "just purchases" included,
+    /// so the charge sheet can show that choice and undo it.
+    func stream(containing t: PoiseKit.Transaction) -> RecurringStream? {
+        allStreams.first { $0.kind != .income && $0.transactionIDs.contains(t.id) }
+    }
+
+    /// What a stream is for: the category of its newest charge. Separate from whether it's a subscription or a bill.
+    /// The merchant's newest logo, so a stream wears the same face as its charges.
+    func logoURL(for s: RecurringStream) -> String? { logos[PoiseKit.Transaction.merchantKey(s.merchant)] }
+
+    func categoryID(for s: RecurringStream) -> String? {
+        s.transactionIDs.last.flatMap { id in raw.first { $0.id == id } }?.categoryID
+    }
+
+    /// Files a stream under a category — every charge from that merchant, and the ones still to come.
+    func file(_ s: RecurringStream, under categoryID: String) async {
+        guard let id = s.transactionIDs.last, let t = raw.first(where: { $0.id == id }) else { return }
+        await correct(t, kind: t.kind == .refund ? .refund : .spend, categoryID: categoryID, always: true)
+    }
+
     /// "This is a…": subscription or bill by hand, or "just purchases" (dismissed — out of Leaks and Next 14).
     func setStreamKind(_ s: RecurringStream, _ kind: StreamKind?) async {
         var draft = settings
@@ -1102,6 +1235,32 @@ final class AppModel {
         if let i = raw.firstIndex(where: { $0.id == t.id }) { raw[i].note = value }
         recompute()
         do { try await repository.update(transactionID: t.id, note: value) } catch { report(error) }
+    }
+
+    /// A card's name, finish and chip. Nil for any goes back to the bank's name, Poise's pick, or the finish's own chip.
+    func setLook(nickname: String?, finish: CardFinish?, chip: CardChipMetal?, for account: Account) async {
+        let trimmed = nickname?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = trimmed.isEmpty || trimmed == account.bankName ? nil : String(trimmed.prefix(40))
+        // Picking the finish Poise would have picked anyway isn't a choice worth storing; the default can still move.
+        let pick = finish == CardFinish.defaults(for: cards)[account.id] ? nil : finish
+        // Same for the chip: the one the finish comes with follows the finish if it changes later.
+        let metal = chip == (finish ?? self.finish(for: account)).chip ? nil : chip
+        if let i = accounts.firstIndex(where: { $0.id == account.id }) {
+            accounts[i].nickname = name; accounts[i].finish = pick?.rawValue; accounts[i].chip = metal?.rawValue
+            accounts[i].name = name ?? accounts[i].bankName ?? accounts[i].name
+        }
+        recompute()
+        do { try await repository.update(accountID: account.id, nickname: name, finish: pick?.rawValue, chip: metal?.rawValue) } catch { report(error) }
+    }
+
+    /// How one card gets paid, which is the only thing that decides what Next subtracts on its due date.
+    func setPayment(_ pays: CardPayment?, fixedAmount: Decimal? = nil, for account: Account) async {
+        if let i = accounts.firstIndex(where: { $0.id == account.id }) {
+            accounts[i].pays = pays
+            accounts[i].paysFixedAmount = fixedAmount
+        }
+        recompute()
+        do { try await repository.update(accountID: account.id, pays: pays, fixedAmount: fixedAmount) } catch { report(error) }
     }
 
     /// Leave a one-off out of the math. Reversible; the row stays in the feed either way.
@@ -1324,11 +1483,13 @@ final class AppModel {
         guard let end = cal.date(byAdding: .day, value: 13, to: today) else { return [] }
         let largestOther = cashflow.flatMap(\.lines).filter { $0.amount < 0 && !$0.name.hasSuffix(" statement") }.map { -$0.amount }.max() ?? 0
         return accounts.compactMap { a -> Insight? in
-            guard let due = a.statementDue, due > today, due <= end, let amount = a.statementPayment(paysInFull: settings.paysCardsInFull), amount >= largestOther else { return nil }
+            guard let next = a.nextDue(now: now), next.date > today, next.date <= end,
+                  let amount = a.statementPayment(default: settings.newCardsPay), amount >= largestOther else { return nil }
+            let due = next.date
             let after = cashflow.first { cal.isDate($0.date, inSameDayAs: due) }?.balanceAfter
             let day = due.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
             let body: String
-            if let after, after >= 0 { body = "\(settings.paysCardsInFull ? "Paid in full" : "The minimum") leaves you \(after.money) ahead through payday — still fine, but it’s the biggest thing in these two weeks." }
+            if let after, after >= 0 { body = "\((a.pays ?? settings.newCardsPay).title) leaves you \(after.money) ahead through payday — still fine, but it’s the biggest thing in these two weeks." }
             else if let after { body = "It leaves checking \((-after).money) short that day. Move that much across first, or pay the minimum." }
             else { body = "The biggest thing in these two weeks." }
             return Insight(id: "statement-\(a.id)-\(Repository.day.string(from: due))", kind: .statement, tone: (after ?? 0) < 0 ? .heads : .neutral,
@@ -1405,6 +1566,7 @@ final class AppModel {
     private func fillLogos() {
         var byKey: [String: String] = [:]
         for t in raw.sorted(by: { $0.displayDate > $1.displayDate }) where t.logoURL != nil && byKey[t.merchantKey] == nil { byKey[t.merchantKey] = t.logoURL }
+        logos = byKey
         guard !byKey.isEmpty else { return }
         for i in raw.indices where raw[i].logoURL == nil { if let url = byKey[raw[i].merchantKey] { raw[i].logoURL = url } }
     }
@@ -1444,10 +1606,10 @@ final class AppModel {
         persistWatchChanges(from: before)
         refreshSince()
         let input = VerdictInput(accounts: accounts, transactions: rows, streams: streams, now: now, nextPayday: settings.paydayOverride,
-                                 keptTarget: settings.keptTarget ?? 0.2, committedSavings: settings.committedSavings, categories: categories, paysCardsInFull: settings.paysCardsInFull)
+                                 keptTarget: settings.keptTarget ?? 0.2, committedSavings: settings.committedSavings, categories: categories, newCardsPay: settings.newCardsPay)
         let v = VerdictEngine.verdict(for: input)
         let p = PaceEngine.pace(transactions: rows, streams: streams, now: now, categories: categories)
-        cashflow = CashflowEngine.nextDays(horizonDays, accounts: accounts, streams: streams, transactions: rows, now: now, paysCardsInFull: settings.paysCardsInFull)
+        cashflow = CashflowEngine.nextDays(horizonDays, accounts: accounts, streams: streams, transactions: rows, now: now, newCardsPay: settings.newCardsPay)
         let ranked = InsightEngine.rank(.init(verdict: v, pace: p, streams: streams, transactions: rows, now: now, acknowledged: acknowledged, dupMuted: Set(settings.dupMuted)))
         let tracked = Set(watches.filter { $0.kind == .price && $0.status.isOpen }.map(\.matcher))
         priceItems = PriceTracker.items(in: all, streams: allStreams.filter { !dismissed.contains($0.id) && isPlanLike($0) }, now: now).map { var i = $0; i.tracked = tracked.contains(i.id); return i }

@@ -2,6 +2,103 @@
 
 Every TestFlight build bumps the version; the section for it becomes the build's "What to Test" notes.
 
+## 0.14.1 — 2026-10-25
+
+- Subscriptions and bills show the merchant's logo, like their charges do: on a subscription's page and in the Leaks rows, including cancelled ones. They used to show the first letter of the name. A merchant without a logo shows its category icon.
+- Logos load once and stay. Poise keeps each one on the phone after the first download, so scrolling and reopening the app show them right away, offline too, instead of fetching them again.
+
+## 0.14.0 — 2026-10-24
+
+- Subscriptions is no longer a category. A category says what a charge was for. Whether it repeats is a separate answer: a subscription you can cancel, or a bill you have to pay. So a gym can be Health and a subscription at the same time.
+- Two new categories: Entertainment (Netflix, Spotify, Disney+, Peacock, Nintendo) and Tech (Apple, apps, devices). Charges that were under Subscriptions moved to where they belong, and Amazon Prime and Uber One went back to Shopping and Transport.
+- A charge that repeats now shows "It repeats monthly" under its category, with Subscription, Bill or Just purchases to pick from.
+- A subscription's page in Leaks shows its category, and "File under" changes it for every charge from that merchant.
+- Bills are worked out from what the merchant is (rent, utilities, phone, internet, insurance, loans), not from the category. A gym filed under Health used to be called a bill.
+
+## 0.13.1 — 2026-10-23
+
+- Amazon no longer says it signed you out every time you open the app. After a restart, Poise was checking the sign-in on the wrong page — one that hadn't loaded anything yet — so every check counted as signed out even though your Amazon session was fine. It now checks the page it actually read.
+- A slow Amazon page is retried later instead of being taken as a sign-out. Only Amazon's own sign-in form counts as signed out.
+
+## 0.13.0 — 2026-10-23
+
+- Pull to refresh is nearly instant. It used to wait for each bank in turn to answer, close to a minute in all (Barclays alone took about 35 seconds). Now the pull asks every bank at once and lets go in about a second. New charges slide in a few seconds later as each bank sends them.
+- Poise refreshes in the background about once an hour, so the app opens with the latest charges already there. iOS picks the exact times based on how often you open the app.
+- Apple Card and Amazon no longer hold up a pull. They update on their own and appear when they're ready.
+
+## 0.12.2 — 2026-10-23
+
+- Charges show on the day they happened, where you are. Some banks date charges by their own clock: Robinhood uses UTC, so dinner at 7:30 pm used to show up as tomorrow's. Poise now uses the time the bank authorised the charge, in your time zone, and falls back to the bank's date only when no time is given.
+- A charge never shows on a later day than when Poise first saw it, and it keeps that day when it settles.
+- Past charges are fixed too. Fifteen from the last three months moved back to the evening they happened.
+
+## 0.12.1 — 2026-10-23
+
+- On Home, a card past last month's total kept a thin bar but drew it thick. The bar is thin again, and only the small mark where last month ended stands taller.
+
+## 0.12.0 — 2026-10-23
+
+- Sixteen finishes for your cards, up from eight. The new ones are Rose, Copper, Midnight, Lagoon, Sage, Violet, Ruby and Sunset. Look & name now groups them in rows: metals, blues, greens and warm colours.
+- Pick the chip, too: Gold, Silver, Rose or Black. Each option shows the chip on your card's finish. A card whose chip you haven't picked keeps the one that comes with its finish, and "Back to the bank's look" resets the chip with everything else.
+- Putting a card back on the default under "How you pay it" now sticks. Before, the card kept the old choice.
+
+## 0.11.0 — 2026-10-22
+
+- Your cards look like cards. Each one has a finish of its own with a fine grain, a soft light across it that moves as you tilt your phone, a lit edge and a shadow in its own colour, plus a chip and the last four along the bottom. Robinhood is gold, Apple Card titanium, Prime Visa ocean; cards Poise can't place get one of the deeper finishes, and two cards with the same name never get the same one.
+- Look & name: give any card a name of your own and pick from eight finishes, with a live preview. It's at the top of "This card" on a card's page, or press and hold a card on Home. The name shows everywhere that card does, and "Back to the bank's look" undoes it.
+- The ® and ™ banks put in card names are gone.
+- The cards on Home now show last month's total next to this month's, with a thin bar for how far into it you are. Past it, the bar runs full with a small mark where last month ended.
+- A light tap as you swipe between cards on a card's page.
+- Where: a little more room between the period tabs and the month under them.
+
+## 0.10.1 — 2026-10-22
+
+- Pulling to refresh now brings in today's charges. A pull asks your banks for anything new, but the new charges come back a few seconds later, and the app used to reload before they arrived, so the pull looked like it did nothing. It now waits a moment for them, and if a bank is slow they still appear once they land, up to a minute later.
+- "As of" under the verdict now shows when your banks were last checked, not when one last had something new. A pull that found nothing used to leave it reading hours ago.
+- Charges some cards date by UTC (Robinhood, for one) no longer show up as tomorrow's when you spend in the evening. They count as today's, so they're in this month's totals right away.
+
+## 0.10.0 — 2026-10-22
+
+- Your cards are on Home. Under the verdict, each card is drawn in its own colours with its last four and what went on it this month; tap one to open it.
+- A card's page now shows what it was spent on, not just its settings. The card sits at the top — what's owed, and what's due when — and your other cards are a swipe away. Below it: the week, month or year on that card alone, how it compares with the one before, where it went as one coloured bar split by category, the merchants it was spent at, and every charge by day. Tap a category for its own page on that card; a chip there widens it back to every card. How you pay it and the rest of the card's settings are at the bottom.
+- Fixed a crash. When a request failed — a dropped connection mid-refresh, a save that didn't go through — the code meant to show the error called itself instead, over and over, until the app ran out of room and closed. It now shows the error.
+
+## 0.9.9 — 2026-10-21
+
+- Signing back in to Amazon now shows you the page that actually needs it. Amazon was letting Poise onto the payments page but stopping it at each order's own page, and the sign-in sheet opened the payments page — which went straight through, so the sheet closed having fixed nothing and the next read failed the same way. The sheet now opens the order Amazon stopped on, so whatever it asks — a password again, a code, a robot check — is in front of you.
+- Orders are opened at a person's pace rather than one straight after another, which is what Amazon's robot checks look for.
+- When a read is stopped, the line under "Contents read" says which kind of check it was.
+
+## 0.9.8 — 2026-10-21
+
+- Reading what was in an Amazon order goes straight to the page Amazon now keeps it on, and waits for the order itself — or a sign-in — rather than taking the first text that stops moving.
+- When Amazon wants a fresh sign-in before showing an order, Poise now notices. It was asking the wrong web view — the one showing the payments page, not the one that had opened the order — so the request went unseen and the read simply came back empty.
+- "Contents read" counts what was actually read; re-reading an order already on file to follow a return was being counted as a failure. When a read does fail, the reason now sits under the figure.
+
+## 0.9.7 — 2026-10-21
+
+- Fixed the real reason recent Amazon orders weren't filling in. Reading the payments page walks back page by page until it runs out, and Amazon's last page isn't the payments page — Poise was taking that as "the session has gone", telling you to sign in again, and giving up before it read what was in any of the orders. So the order numbers matched (103 of 110) while the item names never arrived. The end of a list is now the end of a list.
+- Each half of a check reports its own result. The Amazon page shows "Orders seen" and "Contents read" separately, because they fail for different reasons and a figure for one says nothing about the other.
+
+## 0.9.6 — 2026-10-21
+
+- Amazon charges are being read again. Amazon redesigned its payments page around the middle of the month and started writing the date as "Oct 21, 2026" instead of "October 21, 2026" — and an order whose date Poise can't read is skipped, so every charge after the redesign arrived with nothing attached. Both spellings work now, as do both page layouts, since Amazon still serves the old one in places.
+- A page Poise can't read no longer fails quietly. If order numbers are plainly there but none can be read, that's recorded as a page that has changed shape rather than a page with nothing on it — the two looked identical from the outside, which is why this went unnoticed for a week.
+- Pull to refresh and the next check will fill in everything missed.
+
+## 0.9.5 — 2026-10-09
+
+- Each card decides how it's paid. One toggle covered every card, which is wrong the moment two are paid differently — and it only offered two answers. A card's own page now asks for one of four: the statement balance, the whole balance, the minimum, or a set amount each month. Each names the money it would cost, and a line underneath says exactly what Next will subtract and on which day.
+- The statement balance and the whole balance are separate choices because they're separate sums. A card used since its statement closed owes more than the statement says — on the Prime Visa, $4,020.25 against $6,312.73 — and paying the statement is the one that avoids interest.
+- Settings keeps a default for newly linked cards. A card you haven't decided about follows it, so changing the default still moves them.
+- Fixed while checking it on a real card: "the whole balance" was showing the credit still available rather than the debt — $10,715 on a card owing $1,284.
+
+## 0.9.4 — 2026-10-09
+
+- Signing into Amazon is now the whole of it. The sheet closes the moment you're in, and the reading carries on behind a ring on Home — "Reading your Amazon orders · 30 of 71". Nothing to wait on and nothing to come back to.
+- Allowing a bank to share card due dates takes effect immediately. The refresh straight after it was being skipped by the limit that stops repeated pulls, so allowing it appeared to do nothing until something else triggered a sync — which is exactly how it felt. It now forces the read, and tries once more a few seconds later, since a bank can take a moment to attach a permission it has only just granted.
+- A card whose due date has passed no longer falls out of Next. Banks keep reporting last month's date until the next statement closes, and during that gap the payment vanished from the forecast entirely — an Apple Card with $1,284 owed and a Chase card with $89 were both missing. The date rolls forward a month and the row says it's estimated.
+
 ## 0.9.3 — 2026-10-09
 
 - Next was leaving card payments out, and now says so. The due dates it needs come from the bank, and Chase and Robinhood were refusing them — the permission was asked for as optional when the accounts were linked, so it was never granted. The refusal was being swallowed, which is why a card with thousands owed simply wasn't in the forecast and nothing explained it.
