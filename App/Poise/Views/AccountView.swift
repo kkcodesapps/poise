@@ -6,6 +6,8 @@ struct AccountView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let accountID: String
+    /// Off when the card's page already offers the statement and payment on a page of their own.
+    var showsPayment = true
     @State private var confirmDisconnect = false
 
     private var account: Account? { model.account(id: accountID) }
@@ -15,23 +17,10 @@ struct AccountView: View {
             if let account {
                 VStack(spacing: 0) {
                     hero(account)
-                    if let due = account.statementDue, account.role == .credit {
-                        SectionHeader(title: "Statement")
-                        Card {
-                            HStack { Text("Due").font(Theme.Font.body).foregroundStyle(Theme.Text.primary); Spacer()
-                                Text("\(due.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))\(account.statementAmount.map { " · \($0.money2)" } ?? "")").font(Theme.Font.body).foregroundStyle(Theme.Text.secondary) }
-                                .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44)
-                            if let min = account.minimumDue {
-                                RowDivider()
-                                HStack { Text("Minimum").font(Theme.Font.body).foregroundStyle(Theme.Text.primary); Spacer(); Text(min.money2).font(Theme.Font.body).foregroundStyle(Theme.Text.secondary) }
-                                    .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44)
-                            }
-                        }
-                        .padding(.horizontal, Theme.Spacing.s16)
-                        Text((account.statementIsEstimate ? "Rebuilt from last month’s charges and refunds, less what’s been paid since — Wallet doesn’t share the statement balance itself. " : "")
-                             + (model.settings.paysCardsInFull ? "Next 14 counts the full balance because “I pay credit cards in full” is on." : "Next 14 counts the minimum because “I pay credit cards in full” is off."))
-                            .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s8)
+                    if showsPayment, account.statementDue != nil, account.role == .credit {
+                        StatementSection(account: account)
+                        SectionHeader(title: "How you pay it")
+                        PayChoice(account: account)
                     }
                     SectionHeader(title: "Counts as")
                     Card(padding: Theme.Spacing.s12) {
@@ -109,6 +98,35 @@ struct AccountView: View {
     }
 }
 
+/// A card's statement: when it's due, how much, and the minimum — with a note when Poise had to rebuild the figure.
+struct StatementSection: View {
+    let account: Account
+
+    var body: some View {
+        if let due = account.statementDue {
+            VStack(spacing: 0) {
+                SectionHeader(title: "Statement")
+                Card {
+                    HStack { Text("Due").font(Theme.Font.body).foregroundStyle(Theme.Text.primary); Spacer()
+                        Text("\(due.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))\(account.statementAmount.map { " · \($0.money2)" } ?? "")").font(Theme.Font.body).foregroundStyle(Theme.Text.secondary) }
+                        .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44)
+                    if let min = account.minimumDue {
+                        RowDivider()
+                        HStack { Text("Minimum").font(Theme.Font.body).foregroundStyle(Theme.Text.primary); Spacer(); Text(min.money2).font(Theme.Font.body).foregroundStyle(Theme.Text.secondary) }
+                            .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44)
+                    }
+                }
+                .padding(.horizontal, Theme.Spacing.s16)
+                if account.statementIsEstimate {
+                    Text("Rebuilt from last month’s charges and refunds, less what’s been paid since — Wallet doesn’t share the statement balance itself.")
+                        .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s8)
+                }
+            }
+        }
+    }
+}
+
 /// Everything the user has taken out of the math, grouped like the main list, with a way back.
 struct HiddenAccountsView: View {
     @Environment(AppModel.self) private var model
@@ -149,5 +167,85 @@ struct HiddenAccountsView: View {
         .background(Theme.Bg.base)
         .navigationTitle("Hidden accounts")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+
+/// The four ways a card gets paid, each naming the money it would cost.
+///
+/// The statement balance and the whole balance are different sums on any card used since the statement closed — on a
+/// busy card, thousands apart — so they're separate choices rather than one word. The footer states what the forecast
+/// will actually subtract and when, because that is the only thing this setting does.
+struct PayChoice: View {
+    @Environment(AppModel.self) private var model
+    let account: Account
+    @State private var editingAmount = false
+    @State private var draftAmount: Decimal = 0
+
+    private var chosen: CardPayment { account.pays ?? model.settings.newCardsPay }
+
+    private func amount(_ option: CardPayment) -> Decimal? {
+        var probe = account
+        probe.pays = option
+        return probe.statementPayment(default: model.settings.newCardsPay)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Card {
+                ForEach(Array(CardPayment.allCases.enumerated()), id: \.element) { i, option in
+                    Button {
+                        if option == .fixed { draftAmount = account.paysFixedAmount ?? 0; editingAmount = true }
+                        else { Task { await model.setPayment(option, for: account) } }
+                    } label: {
+                        HStack(spacing: Theme.Spacing.s12) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(option.title).font(Theme.Font.body).foregroundStyle(Theme.Text.primary)
+                                Text(option.detail).font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+                            }
+                            Spacer(minLength: 8)
+                            if let value = amount(option) {
+                                Text(value.money2).font(Theme.Font.moneySM)
+                                    .foregroundStyle(option == chosen ? Theme.Text.primary : Theme.Text.tertiary)
+                            }
+                            if option == chosen {
+                                Image(systemName: "checkmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.Accent.default)
+                            }
+                        }
+                        .padding(.horizontal, Theme.Spacing.s16).padding(.vertical, Theme.Spacing.s12)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if i < CardPayment.allCases.count - 1 { RowDivider() }
+                }
+            }
+            .padding(.horizontal, Theme.Spacing.s16)
+            Text(footer)
+                .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s8)
+        }
+        .alert("How much each month?", isPresented: $editingAmount) {
+            TextField("$0", value: $draftAmount, format: .number).keyboardType(.decimalPad)
+            Button("Cancel", role: .cancel) {}
+            Button("Set") { Task { await model.setPayment(.fixed, fixedAmount: draftAmount, for: account) } }
+        } message: {
+            Text("Poise will count this leaving checking on the due date.")
+        }
+    }
+
+    private var footer: String {
+        guard let due = account.nextDue(now: .now), let amount = account.statementPayment(default: model.settings.newCardsPay) else {
+            return "Nothing is counted for this card until there's a figure to count."
+        }
+        let day = due.date.formatted(.dateTime.month(.abbreviated).day())
+        var line = "Next counts \(amount.money2) leaving checking on \(day)."
+        // The gap between the statement and the balance is the whole reason these are separate choices.
+        if chosen == .statement, let statement = account.statementAmount {
+            let since = (account.owed - statement).roundedToCents
+            if since > 0 { line += " The \(since.money2) charged since the statement closed waits for the next one." }
+        }
+        if chosen == .minimum { line += " The rest keeps sitting on the card." }
+        return line
     }
 }

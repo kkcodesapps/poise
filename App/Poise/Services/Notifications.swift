@@ -9,11 +9,15 @@ private let log = Logger(subsystem: "com.koliokolev.poise", category: "push")
 /// Registers the phone for pushes, hands the token to the server, and routes taps back into the app.
 @MainActor
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
-    var model: AppModel?
+    /// Made here rather than by the scene: iOS can wake the app in the background with no scene at all, and the
+    /// background refresh still needs it.
+    let model = AppModel()
 
     /// Banks reach the server by webhook and Wallet by its own extension, so both arrive with the app closed. Amazon
     /// can't: its session lives in this app's web view, so iOS has to wake us to read it.
     static let amazonRefresh = "com.koliokolev.poise.amazon-refresh"
+    /// Banks: the server already asks them hourly; this wakes the phone to fetch what they sent, so opening it is instant.
+    static let bankRefresh = "com.koliokolev.poise.refresh"
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
@@ -24,6 +28,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             MainActor.assumeIsolated { AppDelegate.handleAmazonRefresh(task) }
         }
         Self.scheduleAmazonRefresh()
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.bankRefresh, using: .main) { task in
+            MainActor.assumeIsolated { AppDelegate.handleBankRefresh(task) }
+        }
+        Self.scheduleBankRefresh()
         return true
     }
 
@@ -33,6 +41,24 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let request = BGAppRefreshTaskRequest(identifier: amazonRefresh)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 4 * 3600)
         try? BGTaskScheduler.shared.submit(request)
+    }
+
+    /// An hour is what's asked for; iOS decides when, from how often the app is opened.
+    static func scheduleBankRefresh() {
+        let request = BGAppRefreshTaskRequest(identifier: bankRefresh)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 3600)
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    @MainActor
+    private static func handleBankRefresh(_ task: BGTask) {
+        scheduleBankRefresh()
+        guard let model = (UIApplication.shared.delegate as? AppDelegate)?.model else { return task.setTaskCompleted(success: false) }
+        let work = Task { @MainActor in
+            await model.backgroundRefresh()
+            task.setTaskCompleted(success: !Task.isCancelled)
+        }
+        task.expirationHandler = { work.cancel() }
     }
 
     /// One page of Amazon, which is a fortnight of orders — enough to catch what's new in the few seconds iOS allows.
@@ -51,7 +77,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
-        Task { await model?.registerDevice(token: token) }
+        Task { await model.registerDevice(token: token) }
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
@@ -61,14 +87,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// In the foreground a new charge is already on screen, so only heads-ups and the review show as banners.
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         let kind = notification.request.content.userInfo["kind"] as? String
-        await MainActor.run { model?.pushArrived() }
+        await MainActor.run { model.pushArrived() }
         return kind == "spend" ? [] : [.banner, .sound]
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo
         let hints = Dictionary(uniqueKeysWithValues: info.compactMap { k, v in (k as? String).flatMap { key in (v as? String).map { (key, $0) } } })
-        await MainActor.run { model?.handlePush(hints) }
+        await MainActor.run { model.handlePush(hints) }
     }
 }
 

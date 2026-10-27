@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import PoiseKit
 
 private let log = Logger(subsystem: "com.koliokolev.poise", category: "cache")
 
@@ -17,7 +18,9 @@ enum SnapshotCache {
     static func load(for userID: String) -> Payload? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        guard let p = try? decoder.decode(Payload.self, from: data), p.userID == userID else { return nil }
+        guard var p = try? decoder.decode(Payload.self, from: data), p.userID == userID else { return nil }
+        // A cache written before Subscriptions was split up still says "subscriptions"; show it where the server now has it.
+        for i in p.snapshot.transactions.indices { p.snapshot.transactions[i].categoryID = SpendCategory.migrated(p.snapshot.transactions[i].categoryID) }
         return p
     }
 

@@ -40,7 +40,7 @@ struct Repository {
         let since = Calendar.current.date(byAdding: .day, value: -days, to: .now) ?? .now
         // Accounts first: hidden ones decide which transactions are worth fetching at all.
         async let accountRows: [AccountRow] = client.from("accounts").select().execute().value
-        async let itemRows: [ItemRow] = client.from("items").select("id, provider, status, last_synced_at, institution_name, liabilities_status").execute().value
+        async let itemRows: [ItemRow] = client.from("items").select("id, provider, status, last_synced_at, last_refreshed_at, institution_name, liabilities_status").execute().value
         let (a, items) = try await (accountRows, itemRows)
         let institution = Dictionary(uniqueKeysWithValues: items.map { ($0.id.uuidString, $0.institution_name) })
         let all = a.map { $0.model(institution: institution[$0.item_id.uuidString] ?? nil) }
@@ -55,7 +55,9 @@ struct Repository {
 
         let (t, s, cats, ws, names) = try await (txnRows, streamRows, catRows, watchRows, nameRows)
         let nameFor = Dictionary(names.compactMap { r in r.display_name.map { (r.matcher, $0) } }, uniquingKeysWith: { a, _ in a })
-        let lastSync = items.compactMap { $0.last_synced_at.flatMap(Self.date(from:)) }.max()
+        // "As of" is when the banks were last asked, not when one last had something new: a pull that finds nothing
+        // still means the screen is current, and showing the older time made a working refresh look broken.
+        let lastSync = items.flatMap { [$0.last_synced_at, $0.last_refreshed_at] }.compactMap { $0.flatMap(Self.date(from:)) }.max()
         let transactions = t.map { row -> Transaction in var m = row.model; if m.displayName == nil { m.displayName = nameFor[m.merchantKey] }; return m }
         return Snapshot(accounts: all.filter { !$0.hidden }, hiddenAccounts: hidden, transactions: transactions, streams: s.map(\.model), lastSync: lastSync,
                         institutions: Array(Set(items.compactMap(\.institution_name))).sorted(),
@@ -89,12 +91,18 @@ struct Repository {
         let id: UUID, item_id: UUID, name: String, mask: String?, role: String, available: Double?, current: Double, currency: String
         let hidden: Bool, hidden_at: String?, balance_at: String?
         let statement_due: String?, statement_amount: Double?, minimum_due: Double?
+        let pays: String?, pays_fixed_amount: Double?
+        let nickname: String?, finish: String?, chip: String?
         func model(institution: String?) -> Account {
-            Account(id: id.uuidString, name: name, mask: mask, role: AccountRole(rawValue: role) ?? .other,
+            let bank = Repository.cleanName(name)
+            var a = Account(id: id.uuidString, name: nickname ?? bank, mask: mask, role: AccountRole(rawValue: role) ?? .other,
                     available: available.map(Repository.decimal), current: Repository.decimal(current), currency: currency,
                     institution: institution, itemID: item_id.uuidString, hidden: hidden,
                     hiddenAt: hidden_at.flatMap(Repository.date(from:)), balanceAt: balance_at.flatMap(Repository.date(from:)),
-                    statementDue: statement_due.flatMap(Repository.day.date(from:)), statementAmount: statement_amount.map(Repository.decimal), minimumDue: minimum_due.map(Repository.decimal))
+                    statementDue: statement_due.flatMap(Repository.day.date(from:)), statementAmount: statement_amount.map(Repository.decimal), minimumDue: minimum_due.map(Repository.decimal),
+                    pays: pays.flatMap(CardPayment.init(rawValue:)), paysFixedAmount: pays_fixed_amount.map(Repository.decimal))
+            a.nickname = nickname; a.bankName = bank; a.finish = finish; a.chip = chip
+            return a
         }
     }
 
@@ -104,13 +112,20 @@ struct Repository {
         let id: UUID, account_id: UUID, amount: Double, merchant: String, authorized_date: String?, posted_date: String
         let pending: Bool, kind: String, category: String?, pair_id: UUID?, provider_category: String?
         let display_name: String?, note: String?, excluded: Bool, created_at: String?, logo_url: String?, order_ref: String?
+        let authorized_at: String?, seen_at: String?
         var model: Transaction {
-            Transaction(id: id.uuidString, accountID: account_id.uuidString, amount: Repository.decimal(amount), merchant: merchant,
-                        authorizedDate: authorized_date.flatMap(Repository.day.date(from:)), date: Repository.day.date(from: posted_date) ?? .now,
-                        pending: pending, kind: TransactionKind(rawValue: kind) ?? .spend, categoryID: category,
+            let posted = Repository.notAfterToday(Repository.day.date(from: posted_date) ?? .now)
+            // The day it happened here, not the day the bank's clock says: see `ChargeDay`.
+            let happened = ChargeDay.resolve(authorizedAt: authorized_at.flatMap(Repository.date(from:)),
+                                             authorized: authorized_date.flatMap(Repository.day.date(from:)), posted: posted,
+                                             seen: seen_at.flatMap(Repository.date(from:)))
+            return Transaction(id: id.uuidString, accountID: account_id.uuidString, amount: Repository.decimal(amount), merchant: merchant,
+                        authorizedDate: happened,
+                        date: posted,
+                        pending: pending, kind: TransactionKind(rawValue: kind) ?? .spend, categoryID: SpendCategory.migrated(category),
                         pairID: pair_id?.uuidString, isFee: provider_category?.hasPrefix("BANK_FEES") ?? false,
                         displayName: display_name, note: note, excluded: excluded, createdAt: created_at.flatMap(Repository.date(from:)), logoURL: logo_url,
-                        orderRef: order_ref)
+                        orderRef: order_ref, providerCategory: provider_category)
         }
     }
 
@@ -123,7 +138,15 @@ struct Repository {
         }
     }
 
-    private struct ItemRow: Decodable { let id: UUID, provider: String, status: String, last_synced_at: String?, institution_name: String?, liabilities_status: String? }
+    private struct ItemRow: Decodable { let id: UUID, provider: String, status: String, last_synced_at: String?, last_refreshed_at: String?, institution_name: String?, liabilities_status: String? }
+
+    /// When a bank last delivered transactions. A pull only asks for them; they land a few seconds later, and this
+    /// moving is how the app knows they're in.
+    func bankSyncedAt() async throws -> Date? {
+        struct Row: Decodable { let last_synced_at: String? }
+        let rows: [Row] = try await client.from("items").select("last_synced_at").eq("provider", value: "plaid").execute().value
+        return rows.compactMap { $0.last_synced_at.flatMap(Repository.date(from:)) }.max()
+    }
 
     private struct CategoryRow: Codable {
         var id: UUID?, user_id: String?, name: String, symbol: String, lens: String, sort: Int
@@ -294,8 +317,44 @@ struct Repository {
     }
 
     /// The user's own flag; nothing on the sync path writes it, so it survives every refresh.
+    /// How one card gets paid. Nil puts it back to following the default.
+    func update(accountID: String, pays: CardPayment?, fixedAmount: Decimal?) async throws {
+        struct Patch: Encodable {
+            let pays: String?, pays_fixed_amount: Double?
+            func encode(to encoder: Encoder) throws {
+                // Nulls must be sent, not skipped, or putting a card back on the default would leave the old choice.
+                var c = encoder.container(keyedBy: K.self)
+                try c.encode(pays, forKey: .pays); try c.encode(pays_fixed_amount, forKey: .pays_fixed_amount)
+            }
+            enum K: String, CodingKey { case pays, pays_fixed_amount }
+        }
+        let amount = fixedAmount.map { NSDecimalNumber(decimal: $0).doubleValue }
+        try await client.from("accounts").update(Patch(pays: pays?.rawValue, pays_fixed_amount: amount)).eq("id", value: accountID).execute()
+    }
+
+    /// A card's look. All nil puts it back to the bank's name, Poise's pick of finish and that finish's chip.
+    func update(accountID: String, nickname: String?, finish: String?, chip: String?) async throws {
+        struct Patch: Encodable {
+            let nickname: String?, finish: String?, chip: String?
+            func encode(to encoder: Encoder) throws {
+                // Nulls must be sent, not skipped, or clearing a nickname would leave the old one.
+                var c = encoder.container(keyedBy: K.self)
+                try c.encode(nickname, forKey: .nickname); try c.encode(finish, forKey: .finish); try c.encode(chip, forKey: .chip)
+            }
+            enum K: String, CodingKey { case nickname, finish, chip }
+        }
+        try await client.from("accounts").update(Patch(nickname: nickname, finish: finish, chip: chip)).eq("id", value: accountID).execute()
+    }
+
     func update(accountID: String, hidden: Bool) async throws {
-        struct Patch: Encodable { let hidden: Bool; let hidden_at: String? }
+        struct Patch: Encodable {
+            let hidden: Bool, hidden_at: String?
+            func encode(to encoder: Encoder) throws {
+                var c = encoder.container(keyedBy: K.self)
+                try c.encode(hidden, forKey: .hidden); try c.encode(hidden_at, forKey: .hidden_at)
+            }
+            enum K: String, CodingKey { case hidden, hidden_at }
+        }
         let at = hidden ? Date.now.formatted(.iso8601) : nil
         try await client.from("accounts").update(Patch(hidden: hidden, hidden_at: at)).eq("id", value: accountID).execute()
     }
@@ -310,7 +369,8 @@ struct Repository {
 
     struct Settings: Codable, Sendable, Equatable {
         var paydayOverride: Date?
-        var paysCardsInFull = true
+        /// What a newly linked card does until the user says otherwise for it.
+        var newCardsPay: CardPayment = .statement
         var keptTarget: Double?           // nil = beat last month
         var committedSavings: Decimal = 0
         var notifySpend = true
@@ -329,6 +389,7 @@ struct Repository {
         var user_id: String?
         var payday_override: String?
         var pays_cc_in_full: Bool
+        var new_cards_pay: String?
         var kept_target: Double?
         var committed_savings: Double
         var notif_prefs: [String: Bool]
@@ -344,7 +405,7 @@ struct Repository {
     func loadSettings() async throws -> Settings {
         let rows: [SettingsRow] = try await client.from("settings").select().limit(1).execute().value
         guard let r = rows.first else { return Settings() }
-        return Settings(paydayOverride: r.payday_override.flatMap(Self.day.date(from:)), paysCardsInFull: r.pays_cc_in_full, keptTarget: r.kept_target,
+        return Settings(paydayOverride: r.payday_override.flatMap(Self.day.date(from:)), newCardsPay: r.new_cards_pay.flatMap(CardPayment.init(rawValue:)) ?? (r.pays_cc_in_full ? .statement : .minimum), keptTarget: r.kept_target,
                         committedSavings: Self.decimal(r.committed_savings), notifySpend: r.notif_prefs["spend"] ?? true,
                         notifyHeadsUp: r.notif_prefs["heads_up"] ?? true, notifyWeekly: r.notif_prefs["weekly_review"] ?? true, faceID: r.faceid, categoryLens: r.category_lens ?? [:],
                         dismissedStreams: r.dismissed_streams ?? [], dupMuted: r.dup_muted ?? [],
@@ -354,7 +415,7 @@ struct Repository {
 
     func save(_ s: Settings) async throws {
         let session = try await client.auth.session
-        let row = SettingsRow(user_id: session.user.id.uuidString, payday_override: s.paydayOverride.map(Self.day.string(from:)), pays_cc_in_full: s.paysCardsInFull,
+        let row = SettingsRow(user_id: session.user.id.uuidString, payday_override: s.paydayOverride.map(Self.day.string(from:)), pays_cc_in_full: s.newCardsPay != .minimum, new_cards_pay: s.newCardsPay.rawValue,
                               kept_target: s.keptTarget, committed_savings: Double(truncating: s.committedSavings as NSDecimalNumber),
                               notif_prefs: ["spend": s.notifySpend, "heads_up": s.notifyHeadsUp, "weekly_review": s.notifyWeekly], faceid: s.faceID, category_lens: s.categoryLens, dismissed_streams: s.dismissedStreams, dup_muted: s.dupMuted,
                               cancelled_streams: s.cancelledStreams.mapValues { Self.day.string(from: $0) }, stream_kinds: s.streamKinds, watched_categories: s.watchedCategories)
@@ -374,5 +435,17 @@ struct Repository {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime]; return f
     }()
     /// Postgres omits fractional seconds when they are zero; accept both shapes.
+    /// Some issuers date a charge by UTC, so one made this evening arrives as tomorrow's and falls outside every
+    /// "so far" window until midnight. Nothing can have been bought in the future, so it's today's.
+    /// "Barclays Cashforward® Mastercard®" → "Barclays Cashforward Mastercard". The marks are the bank's legal habit,
+    /// not part of a name anyone says.
+    static func cleanName(_ s: String) -> String {
+        s.replacingOccurrences(of: "[®™℠]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\\s{2,}", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    static func notAfterToday(_ d: Date) -> Date { min(d, Calendar.current.startOfDay(for: .now)) }
+
     static func date(from iso: String) -> Date? { timestamp.date(from: iso) ?? timestampPlain.date(from: iso) }
 }
