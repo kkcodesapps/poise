@@ -118,11 +118,11 @@ struct AmazonConnectView: View {
             // Two clear readings in a row, so the pause between Amazon's email and password pages can't pass for done.
             settled += 1
             guard settled >= 2 else { continue }
-            stage = .reading
-            // Handed to the model so closing this sheet doesn't stop it.
+            // Signed in — which was the only part needing them. The read is handed to the model and the sheet gets out
+            // of the way; Home carries the progress from here.
             model.startAmazonSweep()
-            while !Task.isCancelled, model.amazonReading { try? await Task.sleep(for: .seconds(1)) }
-            guard model.amazonLapsed else { stage = .done; return }
+            dismiss()
+            return
             // Amazon let us past the form but not to the page. The reader is a separate web view, so whatever they're
             // part-way through is still on screen — go back to it and keep waiting rather than tell a cheerful lie.
             stage = .signIn
@@ -132,6 +132,8 @@ struct AmazonConnectView: View {
 
     // MARK: reading
 
+    /// Only reachable through `-amazon reading`, kept so the progress can be looked at without a real sweep. The
+    /// sheet itself never shows this any more — Home does.
     private var reading: some View {
         VStack(spacing: Theme.Spacing.s12) {
             Spacer()
@@ -248,6 +250,16 @@ struct AmazonConnectionView: View {
                     row("Charges with an order", "\(model.amazonMatched) of \(model.amazonCharges)")
                     RowDivider()
                     row("Orders seen", model.amazonOrdersRead == 0 ? "None yet" : "\(model.amazonOrdersRead) across \(model.amazonPagesRead) pages")
+                    if model.amazonItemsWanted > 0 {
+                        RowDivider()
+                        // The two phases fail for different reasons, so each reports its own result.
+                        row("Contents read", "\(model.amazonItemsRead) of \(model.amazonItemsWanted)")
+                        if let why = model.amazonItemsFailure {
+                            Text(why).font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, Theme.Spacing.s16).padding(.bottom, Theme.Spacing.s8)
+                        }
+                    }
                     if let back = model.amazonReachedBack {
                         RowDivider()
                         row("Reached back to", back.formatted(.dateTime.month(.abbreviated).day().year()))
