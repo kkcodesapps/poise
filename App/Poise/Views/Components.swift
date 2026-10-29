@@ -58,11 +58,15 @@ struct MerchantCircle: View {
     var fill: Color = Theme.Bg.subtle
     var color: Color = Theme.Text.primary
     var dashed = false
+    @State private var loaded: UIImage?
     var body: some View {
         if let logoURL, let url = URL(string: logoURL) {
-            AsyncImage(url: url) { phase in
-                if let image = phase.image { image.resizable().scaledToFill() } else { IconCircle(symbol: symbol, size: size, fill: fill, color: color, dashed: dashed) }
+            ZStack {
+                // Memory first, so a logo seen before draws on the first frame instead of after a fetch.
+                if let image = loaded ?? LogoCache.shared.cached(url) { Image(uiImage: image).resizable().scaledToFill() }
+                else { IconCircle(symbol: symbol, size: size, fill: fill, color: color, dashed: dashed) }
             }
+            .task(id: logoURL) { loaded = await LogoCache.shared.image(for: url) }
             .frame(width: size, height: size).background(Theme.Bg.subtle).clipShape(Circle())
             .overlay(Circle().strokeBorder(Theme.Border.subtle))
             .opacity(dashed ? 0.7 : 1)
@@ -139,11 +143,7 @@ struct StreamRowView: View {
     var body: some View {
         let usage = stream.kind == .income ? nil : model.usage(for: stream)
         HStack(spacing: Theme.Spacing.s12) {
-            ZStack {
-                Circle().fill(Theme.Bg.subtle)
-                Text(String(stream.displayMerchant.prefix(1)).uppercased()).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary)
-            }
-            .frame(width: 40, height: 40)
+            MerchantCircle(logoURL: model.logoURL(for: stream), symbol: model.categories.symbol(model.categoryID(for: stream)))
             VStack(alignment: .leading, spacing: 2) {
                 Text(stream.displayMerchant).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1)
                 Text("\(stream.cadence.label.capitalized) · next \(stream.nextExpected.formatted(.dateTime.month(.abbreviated).day()))" + (usage.map { $0.thisMonth > 0 ? " · + \($0.thisMonth.money) usage this month" : "" } ?? ""))
@@ -221,6 +221,29 @@ struct ProgressTrack: View {
         .accessibilityElement()
         .accessibilityLabel("Progress")
         .accessibilityValue("\(Int(min(max(value, 0), 1) * 100)) percent")
+    }
+}
+
+/// A ring that fills — a long job reported in the corner of something else, rather than on a screen of its own.
+struct ProgressRing: View {
+    /// 0 to 1. Clamped, so a caller that overshoots can't wrap it back round to empty.
+    let value: Double
+    var size: CGFloat = 22
+    var width: CGFloat = 2.5
+    private var fraction: Double { min(max(value, 0), 1) }
+    var body: some View {
+        ZStack {
+            Circle().stroke(Theme.Border.strong, lineWidth: width)
+            Circle()
+                .trim(from: 0, to: fraction)
+                .stroke(Theme.Accent.default, style: StrokeStyle(lineWidth: width, lineCap: .round))
+                .rotationEffect(.degrees(-90))      // starts at twelve o'clock, the way a clock face is read
+        }
+        .frame(width: size, height: size)
+        .animation(.easeOut(duration: 0.3), value: fraction)
+        .accessibilityElement()
+        .accessibilityLabel("Reading your Amazon orders")
+        .accessibilityValue("\(Int(fraction * 100)) percent")
     }
 }
 
