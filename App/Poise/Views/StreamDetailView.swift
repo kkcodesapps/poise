@@ -50,6 +50,23 @@ struct StreamDetailView: View {
                         if cancelledOn != nil {
                             NavRow(symbol: "arrow.uturn.backward", label: "Not cancelled after all", value: "") { Task { await model.uncancel(stream) } }
                         } else {
+                            if stream.kind != .income {
+                                Menu {
+                                    ForEach(model.categories.all) { c in
+                                        Button { Task { await model.file(stream, under: c.id) } } label: { Label(c.name, systemImage: c.symbol) }
+                                    }
+                                } label: {
+                                    HStack(spacing: Theme.Spacing.s12) {
+                                        Image(systemName: model.categories.symbol(model.categoryID(for: live))).font(.system(size: 17, weight: .medium)).foregroundStyle(Theme.Text.secondary).frame(width: 24)
+                                        Text("File under").font(Theme.Font.body).foregroundStyle(Theme.Text.primary)
+                                        Spacer()
+                                        Text(model.categories.name(model.categoryID(for: live))).font(Theme.Font.body).foregroundStyle(Theme.Text.secondary)
+                                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.Text.tertiary)
+                                    }
+                                    .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44).contentShape(Rectangle())
+                                }
+                                RowDivider()
+                            }
                             ToggleRow(label: "Heads-up before it renews", isOn: Binding(get: { headsUp }, set: { on in Task { await model.setRenewalHeadsUp(on, for: stream) } }))
                             if stream.kind != .income {
                                 RowDivider()
@@ -92,7 +109,7 @@ struct StreamDetailView: View {
     private func cancelledCard(_ on: Date) -> some View {
         calloutCard(symbol: "checkmark.shield", tint: Theme.Status.good, background: Theme.Status.goodBg,
                     title: "Cancelled \(on.formatted(.dateTime.month(.abbreviated).day())) — Poise stopped counting it",
-                    body: "\(stream.amount.money)\(stream.cadence.perLabel) out of Subscriptions, Next 14 and the verdict. If \(stream.merchant.prettyMerchant) charges you again, it goes straight to the top of Leaks and you get a heads-up the moment it lands.")
+                    body: "\(stream.amount.money)\(stream.cadence.perLabel) out of Leaks, Next 14 and the verdict. If \(stream.merchant.prettyMerchant) charges you again, it goes straight to the top of Leaks and you get a heads-up the moment it lands.")
     }
 
     private var endedCard: some View {
@@ -105,12 +122,9 @@ struct StreamDetailView: View {
     private var kindChooser: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
             Text("THIS IS A…").font(Theme.Font.caption2Strong).foregroundStyle(Theme.Text.tertiary)
-            HStack(spacing: 8) {
-                Chip(label: "Subscription", symbol: "arrow.clockwise", on: !dismissed && live.kind == .subscription) { Task { await model.setStreamKind(stream, .subscription) } }
-                Chip(label: "Bill", symbol: "house", on: !dismissed && live.kind == .bill) { Task { await model.setStreamKind(stream, .bill) } }
-                Chip(label: "Just purchases", symbol: "bag", on: dismissed) { Task { await model.setStreamKind(stream, nil) } }
-            }
-            Text("Subscriptions and bills both land in Next 14; “Just purchases” takes it out of Leaks.").font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+            StreamKindChips(stream: stream)
+            Text("Subscriptions and bills both land in Next 14; “Just purchases” takes it out of Leaks. The category is separate — this one is \(model.categories.name(model.categoryID(for: live))).")
+                .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16)
     }
@@ -132,13 +146,10 @@ struct StreamDetailView: View {
 
     private var hero: some View {
         VStack(spacing: 4) {
-            ZStack {
-                Circle().fill(Theme.Bg.subtle)
-                Text(String(stream.merchant.prefix(1)).uppercased()).font(Theme.Font.titleMD).foregroundStyle(Theme.Text.primary)
-            }
-            .frame(width: 64, height: 64)
+            MerchantCircle(logoURL: model.logoURL(for: live), symbol: model.categories.symbol(model.categoryID(for: live)), size: 64)
             Text(stream.merchant).font(Theme.Font.titleMD).foregroundStyle(Theme.Text.primary).multilineTextAlignment(.center).padding(.top, 4)
-            Text(stream.isEnded || cancelledOn != nil ? "\(stream.cadence.title) · last charge \(stream.lastSeen.formatted(.dateTime.month(.abbreviated).day()))" : "\(stream.cadence.title) · \(stream.cadence == .annual ? "renews" : "next") \(stream.nextExpected.formatted(.dateTime.month(.abbreviated).day()))")
+            Text((stream.isEnded || cancelledOn != nil ? "\(stream.cadence.title) · last charge \(stream.lastSeen.formatted(.dateTime.month(.abbreviated).day()))" : "\(stream.cadence.title) · \(stream.cadence == .annual ? "renews" : "next") \(stream.nextExpected.formatted(.dateTime.month(.abbreviated).day()))")
+                 + (stream.kind == .income ? "" : " · \(model.categories.name(model.categoryID(for: live)))"))
                 .font(Theme.Font.subhead).foregroundStyle(Theme.Text.secondary)
             Text(stream.amount.money2).font(Theme.Font.moneyLG).foregroundStyle(Theme.Text.primary).padding(.top, 2)
             if let cancelledOn {
@@ -217,4 +228,25 @@ struct CancelSheet: View {
         .padding(.horizontal, Theme.Spacing.s16)
         .background(Theme.Bg.base)
     }
+}
+
+
+/// Subscription, bill, or just purchases — the one answer about how a stream charges, shown on the stream and on each
+/// of its charges. Applies at once; it never touches the category.
+struct StreamKindChips: View {
+    @Environment(AppModel.self) private var model
+    let stream: RecurringStream
+    private var live: RecurringStream { model.allStreams.first { $0.id == stream.id } ?? stream }
+    private var dismissed: Bool { model.settings.dismissedStreams.contains(stream.id) }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Chip(label: "Subscription", symbol: "arrow.clockwise", on: !dismissed && live.kind == .subscription) { set(.subscription) }
+            Chip(label: "Bill", symbol: "doc.text", on: !dismissed && live.kind == .bill) { set(.bill) }
+            Chip(label: "Just purchases", symbol: "minus", on: dismissed) { set(nil) }
+        }
+        .sensoryFeedback(.selection, trigger: dismissed ? "none" : live.kind.rawValue)
+    }
+
+    private func set(_ kind: StreamKind?) { Task { await model.setStreamKind(stream, kind) } }
 }

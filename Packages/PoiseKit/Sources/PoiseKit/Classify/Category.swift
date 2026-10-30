@@ -7,7 +7,7 @@ public enum Lens: String, Codable, Sendable, CaseIterable {
     case kept
 }
 
-/// A category at runtime: one of the nine built-ins or one the user created. Ids: built-ins use the enum's raw value,
+/// A category at runtime: one of the ten built-ins or one the user created. Ids: built-ins use the enum's raw value,
 /// custom ones a UUID string.
 public struct Category: Identifiable, Hashable, Codable, Sendable {
     public let id: String
@@ -61,7 +61,8 @@ public extension SpendCategory {
         case .dining: "fork.knife"
         case .transport: "car"
         case .shopping: "bag"
-        case .subscriptions: "arrow.clockwise"
+        case .entertainment: "tv"
+        case .tech: "laptopcomputer"
         case .health: "heart"
         case .fun: "ticket"
         case .other: "ellipsis"

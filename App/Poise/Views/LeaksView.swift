@@ -122,15 +122,12 @@ struct LeaksView: View {
 
 /// A subscription that stopped — by your hand or on its own — muted, with what it used to cost.
 struct EndedStreamRow: View {
+    @Environment(AppModel.self) private var model
     let stream: RecurringStream
     let cancelledOn: Date?
     var body: some View {
         HStack(spacing: Theme.Spacing.s12) {
-            ZStack {
-                Circle().fill(Theme.Bg.subtle)
-                Text(String(stream.displayMerchant.prefix(1)).uppercased()).font(Theme.Font.headline).foregroundStyle(Theme.Text.tertiary)
-            }
-            .frame(width: 40, height: 40)
+            MerchantCircle(logoURL: model.logoURL(for: stream), symbol: model.categories.symbol(model.categoryID(for: stream)), color: Theme.Text.tertiary).opacity(0.6)
             VStack(alignment: .leading, spacing: 2) {
                 Text(stream.displayMerchant).font(Theme.Font.headline).foregroundStyle(Theme.Text.secondary).lineLimit(1)
                 Text(cancelledOn.map { "Cancelled \($0.formatted(.dateTime.month(.abbreviated).day())) · watching for a charge" }

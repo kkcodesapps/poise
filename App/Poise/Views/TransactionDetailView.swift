@@ -73,6 +73,7 @@ struct TransactionDetailView: View {
                         SectionHeader(title: "Category")
                         chips
                     }
+                    if let stream = model.stream(containing: transaction) { repeats(stream) }
                     SectionHeader(title: "This is…")
                     Card {
                         kindRow(.spend, symbol: "bag", label: "Spending")
@@ -364,6 +365,21 @@ struct TransactionDetailView: View {
             .tint(Theme.Accent.default).padding(.vertical, 10).padding(.horizontal, Theme.Spacing.s16)
         }
         .padding(.horizontal, Theme.Spacing.s16)
+    }
+
+    /// How it charges, beside what it's for: a gym is Health and a subscription. Only on a charge that repeats.
+    private func repeats(_ stream: RecurringStream) -> some View {
+        let count = stream.transactionIDs.count
+        let since = model.transactions.first { $0.id == stream.transactionIDs.first }?.displayDate
+        return VStack(alignment: .leading, spacing: 0) {
+            SectionHeader(title: "It repeats \(stream.cadence.title.lowercased())")
+            VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
+                StreamKindChips(stream: stream)
+                Text("\(stream.amount.money2)\(stream.isEnded ? " · ended" : " · next \(stream.nextExpected.formatted(.dateTime.month(.abbreviated).day()))") · \(count) charge\(count == 1 ? "" : "s")\(since.map { " since \($0.formatted(.dateTime.month(.abbreviated)))" } ?? ""). A subscription you can cancel; a bill you have to pay. Either way it’s in Leaks and Next 14.")
+                    .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.Spacing.s16).padding(.top, 4)
+        }
     }
 
     private var chips: some View {

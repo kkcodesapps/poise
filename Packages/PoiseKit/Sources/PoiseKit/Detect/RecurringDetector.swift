@@ -125,10 +125,18 @@ public enum RecurringDetector {
         }
     }
 
-    /// Bills are the things you can't easily cancel (needs); everything else recurring is a subscription.
+    /// A bill is something you have to pay — rent, utilities, phone, internet, insurance, a loan. Anything else that
+    /// repeats is a subscription, because you could cancel it: a gym is Health *and* a subscription.
+    ///
+    /// Decided by what the merchant is, never by the category: the category says what a charge is for, and a
+    /// needs-lens category (Health) made every gym membership a bill. Without the provider's word, rent and utilities
+    /// are filed under Home, so that is the fallback.
     static func streamKind(for t: Transaction, categories: CategorySet) -> StreamKind {
-        categories.lens(t.categoryID) == .needs ? .bill : .subscription
+        if let provider = t.providerCategory { return billPrefixes.contains { provider.hasPrefix($0) } ? .bill : .subscription }
+        return t.categoryID == SpendCategory.home.rawValue ? .bill : .subscription
     }
+
+    static let billPrefixes = ["RENT_AND_UTILITIES", "LOAN_PAYMENTS", "GENERAL_SERVICES_INSURANCE"]
 }
 
 private func abs(_ d: Decimal) -> Decimal { d < 0 ? -d : d }

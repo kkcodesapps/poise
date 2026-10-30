@@ -40,6 +40,21 @@ struct HomeView: View {
                         }
                         .buttonStyle(.plain)
                     }
+                    // The long read reports here rather than holding a sheet open: a ring in the corner of a line of
+                    // text, and nothing to do about it.
+                    if model.amazonReading, model.amazonItemsTotal > 0 {
+                        HStack(spacing: Theme.Spacing.s12) {
+                            ProgressRing(value: Double(model.amazonItemsDone) / Double(model.amazonItemsTotal))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Reading your Amazon orders").font(Theme.Font.subheadStrong).foregroundStyle(Theme.Text.primary)
+                                Text("\(model.amazonItemsDone) of \(model.amazonItemsTotal) · what was in them")
+                                    .font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
+                            }
+                            Spacer(minLength: 8)
+                        }
+                        .padding(Theme.Spacing.s12).padding(.horizontal, 4)
+                        .background(Theme.Accent.subtle, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+                    }
                     // Amazon drops its session every few weeks. Signing in again belongs here, where the pull that found
                     // the problem happened — not three taps away in Settings.
                     if model.amazonLapsed {
@@ -80,6 +95,9 @@ struct HomeView: View {
                     if let last = model.lastSync {
                         Text("\((model.institutions.isEmpty ? ["Accounts"] : model.institutions).joined(separator: " · ")) · \(last.freshness)")
                             .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).lineLimit(1)
+                    }
+                    if model.looksLinked, !model.cards.isEmpty {
+                        CardStrip { model.openCard = $0 }
                     }
                     if let since = model.since {
                         Button { model.showSince = true } label: {
@@ -148,6 +166,10 @@ struct HomeView: View {
                 }
             }
             .navigationDestination(isPresented: $model.showWatching) { WatchingView() }
+            .navigationDestination(item: $model.openCard) { CardPage(accountID: $0) }
+            .sheet(isPresented: Binding(get: { model.lookCard != nil }, set: { if !$0 { model.lookCard = nil } })) {
+                if let id = model.lookCard { CardLookSheet(accountID: id) }
+            }
         }
     }
 

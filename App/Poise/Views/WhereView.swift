@@ -48,7 +48,7 @@ struct WhereView: View {
             Button { model.stepWhere(1) } label: { IconCircle(symbol: "chevron.right", size: 36, fill: Theme.Bg.subtle, color: model.whereIsCurrent ? Theme.Text.tertiary : Theme.Text.primary) }
                 .buttonStyle(.plain).disabled(model.whereIsCurrent)
         }
-        .padding(.horizontal, Theme.Spacing.s16).padding(.vertical, 4)
+        .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s8).padding(.bottom, 4)
     }
 
     private func vsLine(_ b: Breakdown) -> String {
@@ -290,7 +290,10 @@ struct SliceCard: View {
 struct CategoryDetailView: View {
     @Environment(AppModel.self) private var model
     let categoryID: String
+    /// Opened from a card's page: the category on that card alone, until the chip under the total widens it.
+    var accountID: String? = nil
     @State private var range: CategoryHistory.Range = .year
+    @State private var widened = false
     /// A month picked from the history chart; nil is the month in progress.
     @State private var pickedMonth: Date?
 
@@ -300,12 +303,16 @@ struct CategoryDetailView: View {
         guard let m = pickedMonth, let i = Calendar.current.dateInterval(of: .month, for: m) else { return model.whereWindow }
         return i
     }
-    private var charges: [PoiseKit.Transaction] { model.transactions.filter { window.holds($0.displayDate) && ($0.kind == .spend || $0.kind == .untracked) && model.categories.resolve($0.categoryID).id == categoryID }.sorted { $0.displayDate > $1.displayDate } }
-    private var merchants: [CategoryBreakdown.Merchant] { CategoryBreakdown.merchants(in: categoryID, transactions: model.transactions, window: window, categories: model.categories) }
+    /// The card the page is narrowed to, if it still is.
+    private var card: String? { widened ? nil : accountID }
+    private var pool: [PoiseKit.Transaction] { card.map { model.transactions(on: $0) } ?? model.transactions }
+    private var charges: [PoiseKit.Transaction] { pool.filter { window.holds($0.displayDate) && ($0.kind == .spend || $0.kind == .untracked) && model.categories.resolve($0.categoryID).id == categoryID }.sorted { $0.displayDate > $1.displayDate } }
+    private var merchants: [CategoryBreakdown.Merchant] { CategoryBreakdown.merchants(in: categoryID, transactions: pool, window: window, categories: model.categories) }
 
     var body: some View {
-        let row = model.breakdown?.rows.first { $0.categoryID == categoryID }
-        let history = model.history(categoryID: categoryID)
+        let row = (card.map { model.breakdown(account: $0) } ?? model.breakdown)?.rows.first { $0.categoryID == categoryID }
+        // The history is every card's; on one card it would be a different, emptier story, so it waits for the widen.
+        let history = card == nil ? model.history(categoryID: categoryID) : nil
         // The month the page is describing: one picked from the chart, else the window Where has selected.
         let picked = pickedMonth.flatMap { m in history?.months.first { Calendar.current.isDate($0.start, equalTo: m, toGranularity: .month) } }
         let total = picked?.total ?? row?.amount ?? 0
@@ -314,7 +321,7 @@ struct CategoryDetailView: View {
                 VStack(spacing: 4) {
                     IconCircle(symbol: category.symbol, size: 56, fill: category.lens == .wants ? Theme.Accent.subtle : Theme.Bg.subtle, color: category.lens == .wants ? Theme.Accent.default : Theme.Text.primary).padding(.bottom, 6)
                     Text(total.money).font(Theme.Font.moneyXL).foregroundStyle(Theme.Text.primary)
-                    Text("\(picked.map { $0.start.formatted(.dateTime.month(.wide).year()) } ?? Periods.title(window, model.wherePeriod)) · \(charges.count) charge\(charges.count == 1 ? "" : "s")\(picked == nil ? (row.map { " · \(Int(($0.share * 100).rounded()))% of spending" } ?? "") : "")").font(Theme.Font.subhead).foregroundStyle(Theme.Text.secondary)
+                    Text("\(picked.map { $0.start.formatted(.dateTime.month(.wide).year()) } ?? Periods.title(window, model.wherePeriod)) · \(charges.count) charge\(charges.count == 1 ? "" : "s")\(picked == nil ? (row.map { " · \(Int(($0.share * 100).rounded()))% of \(card == nil ? "spending" : "this card")" } ?? "") : "")").font(Theme.Font.subhead).foregroundStyle(Theme.Text.secondary)
                     if let picked, let h = history {
                         // A month that's over is measured against the usual one.
                         let d = (picked.total - h.usual).roundedToCents
@@ -329,6 +336,13 @@ struct CategoryDetailView: View {
                     }
                 }
                 .padding(.top, 8).padding(.bottom, 12)
+                if let accountID, let account = model.account(id: accountID) {
+                    HStack {
+                        Chip(label: "\(account.name) only", symbol: "creditcard", on: !widened) { withAnimation(.snappy) { widened.toggle() } }
+                        Spacer()
+                    }
+                    .padding(.horizontal, Theme.Spacing.s16).padding(.bottom, Theme.Spacing.s8)
+                }
                 if let h = history {
                     CategoryHistoryCard(name: category.name, history: h, range: $range, selected: $pickedMonth).padding(.horizontal, Theme.Spacing.s16)
                     if !h.moves.isEmpty, pickedMonth == nil {
@@ -366,7 +380,7 @@ struct CategoryDetailView: View {
                 SectionHeader(title: pickedMonth == nil ? "Charges · \(charges.count)" : "Charges in \(window.start.formatted(.dateTime.month(.abbreviated))) · \(charges.count)")
                 Card {
                     ForEach(Array(charges.enumerated()), id: \.element.id) { i, t in
-                        Button { model.selectedTransaction = t } label: { TransactionRowView(transaction: t, account: model.accounts.first { $0.id == t.accountID }) }.buttonStyle(.plain)
+                        Button { model.selectedTransaction = t } label: { TransactionRowView(transaction: t, account: card == nil ? model.accounts.first { $0.id == t.accountID } : nil) }.buttonStyle(.plain)
                         if i < charges.count - 1 { RowDivider() }
                     }
                 }

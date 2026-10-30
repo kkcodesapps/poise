@@ -67,11 +67,18 @@ struct ProfileView: View {
             .background(Theme.Bg.base)
             .navigationTitle("You")
             .navigationBarTitleDisplayMode(.inline)
+            #if DEBUG
+            .onChange(of: model.openAccount, initial: true) { _, id in if let id { model.profilePath = ["account:\(id)"] } }
+            #endif
             .navigationDestination(for: String.self) { route in
                 if route == "categories" { CategoriesView() }
                 else if route == "amazon" { AmazonConnectionView() }
                 else if route == "hidden" { HiddenAccountsView() }
-                else if route.hasPrefix("account:") { AccountView(accountID: String(route.dropFirst("account:".count))) }
+                else if route.hasPrefix("account:") {
+                    let id = String(route.dropFirst("account:".count))
+                    // A card opens on what was spent on it; its settings are at the bottom of that page.
+                    if model.account(id: id)?.role == .credit { CardPage(accountID: id) } else { AccountView(accountID: id) }
+                }
                 else { WatchingView() }
             }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.fontWeight(.semibold).tint(Theme.Accent.default) } }
@@ -179,7 +186,16 @@ struct SettingsSection: View {
         Card {
             DatePickerRow(label: "Payday", detected: model.streams.first { $0.kind == .income }?.nextExpected, date: $draft.paydayOverride)
             RowDivider()
-            ToggleRow(label: "I pay credit cards in full", isOn: $draft.paysCardsInFull)
+            // A default for cards nobody has decided about — the cards themselves override it on their own pages.
+            HStack {
+                Text("New cards pay").font(Theme.Font.body).foregroundStyle(Theme.Text.primary)
+                Spacer()
+                Picker("New cards pay", selection: $draft.newCardsPay) {
+                    ForEach(CardPayment.allCases.filter { $0 != .fixed }, id: \.self) { Text($0.shortTitle).tag($0) }
+                }
+                .labelsHidden().tint(Theme.Text.secondary)
+            }
+            .padding(.horizontal, Theme.Spacing.s16).frame(minHeight: 44)
             RowDivider()
             HStack {
                 Text("Kept target").font(Theme.Font.body).foregroundStyle(Theme.Text.primary)
