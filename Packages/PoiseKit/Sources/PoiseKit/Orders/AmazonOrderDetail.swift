@@ -96,14 +96,18 @@ public enum AmazonOrderDetails {
     /// "Order placed September 5, 2026  Order # 113-…" — the date sits on the same line as the order number.
     private static func placedDate(in lines: [String], calendar: Calendar) -> Date? {
         guard let line = lines.first(where: { $0.hasPrefix("Order placed") }) else { return nil }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = "MMMM d, yyyy"
-        let scanner = line.replacingOccurrences(of: "Order placed", with: "")
+        let full = DateFormatter()
+        full.locale = Locale(identifier: "en_US_POSIX")
+        full.timeZone = calendar.timeZone
+        full.dateFormat = "MMMM d, yyyy"
+        let short = DateFormatter()
+        short.locale = full.locale
+        short.timeZone = full.timeZone
+        short.dateFormat = "MMM d, yyyy"          // Amazon abbreviates the month on some renderings
+        let scanner = line.replacingOccurrences(of: "Order placed", with: "").replacingOccurrences(of: ".", with: "")
         for end in scanner.indices.reversed() {
             let candidate = String(scanner[scanner.startIndex ... end]).trimmingCharacters(in: .whitespaces)
-            if let date = formatter.date(from: candidate) { return date }
+            if let date = full.date(from: candidate) ?? short.date(from: candidate) { return date }
         }
         return nil
     }

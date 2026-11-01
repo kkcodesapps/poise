@@ -48,10 +48,13 @@ public struct Transaction: Identifiable, Hashable, Codable, Sendable {
     /// The day the merchant says the order was placed. A card authorises when the seller ships, and some cards report
     /// only the posting day, so this is the one date that says when the thing was actually bought.
     public var purchasedDate: Date?
+    /// The provider's own detailed category ("RENT_AND_UTILITIES_TELEPHONE"). Says what kind of thing a merchant is,
+    /// which is how a repeating charge is told to be a bill rather than a subscription.
+    public var providerCategory: String?
 
     public init(id: String, accountID: String, amount: Decimal, merchant: String, authorizedDate: Date? = nil, date: Date, pending: Bool = false, kind: TransactionKind = .spend, category: SpendCategory? = nil, categoryID: String? = nil, pairID: String? = nil, isFee: Bool = false,
                 displayName: String? = nil, note: String? = nil, excluded: Bool = false, createdAt: Date? = nil, logoURL: String? = nil, orderRef: String? = nil,
-                purchasedDate: Date? = nil) {
+                purchasedDate: Date? = nil, providerCategory: String? = nil) {
         self.id = id
         self.accountID = accountID
         self.amount = amount
@@ -71,6 +74,7 @@ public struct Transaction: Identifiable, Hashable, Codable, Sendable {
         self.logoURL = logoURL
         self.orderRef = orderRef
         self.purchasedDate = purchasedDate
+        self.providerCategory = providerCategory
     }
 
     /// The built-in category, when the id is one. Custom categories come back nil — use `CategorySet` for those.

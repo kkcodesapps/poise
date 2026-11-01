@@ -69,10 +69,11 @@ public struct VerdictInput: Sendable {
     public var categories: CategorySet
 
     /// Whether a card's statement leaves checking in full on its due date (else the minimum) — the same switch Next 14 uses.
-    public var paysCardsInFull: Bool
+    /// What a card does when the user hasn't said otherwise for it.
+    public var newCardsPay: CardPayment
 
-    public init(accounts: [Account], transactions: [Transaction], streams: [RecurringStream], now: Date, nextPayday: Date? = nil, expectedIncome: Decimal? = nil, keptTarget: Double = 0.20, committedSavings: Decimal = 0, anomalies: Int = 0, calendar: Calendar = .current, categories: CategorySet = .builtIn, paysCardsInFull: Bool = true) {
-        self.paysCardsInFull = paysCardsInFull
+    public init(accounts: [Account], transactions: [Transaction], streams: [RecurringStream], now: Date, nextPayday: Date? = nil, expectedIncome: Decimal? = nil, keptTarget: Double = 0.20, committedSavings: Decimal = 0, anomalies: Int = 0, calendar: Calendar = .current, categories: CategorySet = .builtIn, newCardsPay: CardPayment = .statement) {
+        self.newCardsPay = newCardsPay
         self.accounts = accounts
         self.transactions = transactions
         self.streams = streams
@@ -121,8 +122,8 @@ public enum VerdictEngine {
         // The same picture as Next 14: card charges settle through the statement, and the statement leaves checking.
         let cards = Set(input.accounts.filter { $0.role == .credit }.map(\.id))
         for a in input.accounts where a.role == .credit && !a.hidden {
-            guard let due = a.statementDue, let amount = a.statementPayment(paysInFull: input.paysCardsInFull) else { continue }
-            let day = cal.startOfDay(for: due)
+            guard let next = a.nextDue(now: input.now, calendar: cal), let amount = a.statementPayment(default: input.newCardsPay) else { continue }
+            let day = cal.startOfDay(for: next.date)
             if day > today, day <= payday { byDay[day, default: 0] -= amount }
         }
         for s in input.streams {

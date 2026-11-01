@@ -158,3 +158,20 @@ Sponsored
         #expect(AmazonOrderDetails.parse(plain, orderID: "x", calendar: Fix.calendar).returnStatus == nil)
     }
 }
+
+@Suite("An abbreviated order date") struct AmazonShortPlacedDateTests {
+    @Test func readsTheShortMonthToo() {
+        let page = """
+        Order placed Oct 15, 2026  Order # 113-0330642-8190615
+        Grand Total:
+        $113.66
+        Delivered Oct 16
+        A product with a long enough name
+        Sold by: A Seller
+        $113.66
+        """
+        let detail = AmazonOrderDetails.parse(page, orderID: "113-0330642-8190615", calendar: Fix.calendar)
+        #expect(detail.placed == Fix.calendar.startOfDay(for: Fix.day(2026, 10, 15)))
+        #expect(detail.items.count == 1)
+    }
+}

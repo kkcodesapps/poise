@@ -5,7 +5,7 @@ import Testing
 struct DetectionTests {
     let now = Fix.day(2026, 9, 15)
 
-    func monthly(_ id: String, _ merchant: String, _ amounts: [String], day: Int, category: SpendCategory = .subscriptions) -> [PoiseKit.Transaction] {
+    func monthly(_ id: String, _ merchant: String, _ amounts: [String], day: Int, category: SpendCategory = .entertainment) -> [PoiseKit.Transaction] {
         amounts.enumerated().map { i, a in Fix.tx("\(id)\(i)", "card", "-\(a)", merchant, on: Fix.day(2026, 6 + i, day), category: category) }
     }
 
@@ -40,8 +40,8 @@ struct DetectionTests {
 
     @Test func aQuietStreamThatChargesAgainCameBack() {
         // Headspace monthly Mar–Jun, silent through the summer, then again on Sep 12: one stream, active, marked as returned.
-        var rows = (0..<4).map { Fix.tx("h\($0)", "card", "-12.99", "Headspace", on: Fix.day(2026, 3 + $0, 12), category: .subscriptions) }
-        rows.append(Fix.tx("h9", "card", "-12.99", "Headspace", on: Fix.day(2026, 9, 12), category: .subscriptions))
+        var rows = (0..<4).map { Fix.tx("h\($0)", "card", "-12.99", "Headspace", on: Fix.day(2026, 3 + $0, 12), category: .entertainment) }
+        rows.append(Fix.tx("h9", "card", "-12.99", "Headspace", on: Fix.day(2026, 9, 12), category: .entertainment))
         let s = try! #require(RecurringDetector.detect(rows, now: now, calendar: Fix.calendar).first)
         #expect(!s.isEnded && s.returnedAt == Fix.calendar.startOfDay(for: Fix.day(2026, 9, 12)) && s.transactionIDs.count == 5)
         #expect(s.cadence == Cadence.monthly && s.nextExpected == Fix.calendar.startOfDay(for: Fix.day(2026, 10, 12)))
@@ -67,7 +67,7 @@ struct DetectionTests {
         #expect(big.nextExpected == Fix.calendar.startOfDay(for: Fix.day(2026, 10, 2)) && big.transactionIDs == ["r7", "r8", "r9"])
 
         // Two Netflix plans two days apart: each keeps its own rhythm.
-        let netflix = [7, 8, 9].flatMap { m in [Fix.tx("n\(m)", "card", "-26.99", "Netflix", on: Fix.day(2026, m, 13), category: .subscriptions), Fix.tx("o\(m)", "card", "-24.99", "Netflix", on: Fix.day(2026, m, 15), category: .subscriptions)] }
+        let netflix = [7, 8, 9].flatMap { m in [Fix.tx("n\(m)", "card", "-26.99", "Netflix", on: Fix.day(2026, m, 13), category: .entertainment), Fix.tx("o\(m)", "card", "-24.99", "Netflix", on: Fix.day(2026, m, 15), category: .entertainment)] }
         let two = RecurringDetector.detect(netflix, now: Fix.day(2026, 9, 20), calendar: Fix.calendar)
         #expect(two.count == 2 && two.allSatisfy { $0.cadence == Cadence.monthly })
     }
@@ -87,16 +87,16 @@ struct DetectionTests {
     }
 
     @Test func aCancelledStreamThatChargesAgainIsTheTopInsight() {
-        var rows = (0..<4).map { Fix.tx("c\($0)", "card", "-200", "Cursor", on: Fix.day(2026, 6 + $0, 19), category: .subscriptions) }
+        var rows = (0..<4).map { Fix.tx("c\($0)", "card", "-200", "Cursor", on: Fix.day(2026, 6 + $0, 19), category: .entertainment) }
         let streams = RecurringDetector.detect(rows, now: Fix.day(2026, 9, 21), calendar: Fix.calendar)
         let cancelled = ["spend|cursor": Fix.day(2026, 9, 21)]
         #expect(Cancellations.chargedAfterCancel(streams: streams, cancelled: cancelled, transactions: rows, calendar: Fix.calendar).isEmpty)
-        rows.append(Fix.tx("c9", "card", "-200", "Cursor", on: Fix.day(2026, 10, 19), category: .subscriptions))
+        rows.append(Fix.tx("c9", "card", "-200", "Cursor", on: Fix.day(2026, 10, 19), category: .entertainment))
         let ins = try! #require(Cancellations.chargedAfterCancel(streams: streams, cancelled: cancelled, transactions: rows, calendar: Fix.calendar).first)
         #expect(ins.kind == Insight.Kind.cancelledCharge && ins.rank == 0 && ins.id == "cancelled-spend|cursor-c9" && ins.title == "Cursor charged you after you cancelled" && ins.body.hasPrefix("$200.00 on Oct 19"))
         // A stream that came back this week gets the quieter card.
-        var back = (0..<4).map { Fix.tx("h\($0)", "card", "-12.99", "Headspace", on: Fix.day(2026, 3 + $0, 12), category: .subscriptions) }
-        back.append(Fix.tx("h9", "card", "-12.99", "Headspace", on: Fix.day(2026, 9, 12), category: .subscriptions))
+        var back = (0..<4).map { Fix.tx("h\($0)", "card", "-12.99", "Headspace", on: Fix.day(2026, 3 + $0, 12), category: .entertainment) }
+        back.append(Fix.tx("h9", "card", "-12.99", "Headspace", on: Fix.day(2026, 9, 12), category: .entertainment))
         let r = Cancellations.returned(streams: RecurringDetector.detect(back, now: now, calendar: Fix.calendar), now: now, calendar: Fix.calendar)
         #expect(r.first?.kind == Insight.Kind.streamReturned && r.first?.title == "Headspace is back")
     }

@@ -83,4 +83,12 @@ public enum CategoryBreakdown {
         let groups = Dictionary(grouping: rows) { $0.merchantKey }
         return groups.values.map { g in Merchant(name: g[0].merchant, amount: g.reduce(0) { $0 + $1.magnitude }.roundedToCents, count: g.count) }.sorted { $0.amount > $1.amount }
     }
+
+    /// Merchants across every category for the window, ranked — what one card was spent at. Money set aside (the kept
+    /// lens) isn't spending, and neither is anything the user left out.
+    public static func merchants(transactions: [Transaction], window: DateInterval, categories: CategorySet = .builtIn) -> [Merchant] {
+        let rows = transactions.filter { window.holds($0.displayDate) && ($0.kind == .spend || $0.kind == .untracked) && !$0.excluded && categories.lens($0.categoryID) != .kept }
+        let groups = Dictionary(grouping: rows) { $0.merchantKey }
+        return groups.values.map { g in Merchant(name: g[0].merchant, amount: g.reduce(0) { $0 + $1.magnitude }.roundedToCents, count: g.count) }.sorted { $0.amount > $1.amount }
+    }
 }

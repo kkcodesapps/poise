@@ -38,7 +38,10 @@ public enum AmazonOrders {
     // a line in the other — so nothing here may depend on where the line breaks fall. Only three things are looked for,
     // wherever they sit: a day, a signed amount, and an order number. A store purchase carries a UUID instead of an
     // order number and nothing can open it, so the pattern simply doesn't match those.
-    private static let dayPattern = #"(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}"#
+    // Amazon writes the month in full on one rendering and abbreviated on another ("October 21, 2026" / "Oct 21,
+    // 2026"), and redesigned the page from the second to the first without warning — which silently stopped every
+    // order being read, because an order with no date above it is skipped. Both spellings are matched now.
+    private static let dayPattern = #"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}"#
     private static let amountPattern = #"[-−+]?\$\d[\d,]*\.\d{2}"#
     private static let orderPattern = #"Order\s*#\s*(\d{3}-\d{7}-\d{7})"#
 
@@ -54,15 +57,23 @@ public enum AmazonOrders {
         let day = DateFormatter()
         day.locale = Locale(identifier: "en_US_POSIX")
         day.timeZone = calendar.timeZone
+        let short = DateFormatter()
+        short.locale = day.locale
+        short.timeZone = day.timeZone
         day.dateFormat = "MMMM d, yyyy"
+        short.dateFormat = "MMM d, yyyy"
 
         let ns = text as NSString
         let whole = NSRange(location: 0, length: ns.length)
         var found: [(at: Int, marker: Marker)] = []
 
         for match in regex(dayPattern).matches(in: text, range: whole) {
-            let raw = ns.substring(with: match.range).replacingOccurrences(of: "\u{00a0}", with: " ")
-            if let d = day.date(from: raw.replacingOccurrences(of: "  ", with: " ")) {
+            var raw = ns.substring(with: match.range)
+                .replacingOccurrences(of: "\u{00a0}", with: " ")
+                .replacingOccurrences(of: "  ", with: " ")
+                .replacingOccurrences(of: ".", with: "")
+            if !raw.contains(",") , let i = raw.lastIndex(of: " ") { raw.insert(",", at: i) }   // "Oct 21 2026"
+            if let d = day.date(from: raw) ?? short.date(from: raw) {
                 found.append((match.range.location, .day(d)))
             }
         }
@@ -83,7 +94,7 @@ public enum AmazonOrders {
         var claimed = Set<Int>()
         for (i, entry) in found.enumerated() {
             switch entry.marker {
-            case .day(let d): currentDay = d
+            case .day(let d): currentDay = d        // heading a group on one layout, on the entry itself on the other
             case .amount: break
             case .order(let id):
                 guard let currentDay, let amount = claimAmount(in: found, for: i, claimed: &claimed) else { continue }

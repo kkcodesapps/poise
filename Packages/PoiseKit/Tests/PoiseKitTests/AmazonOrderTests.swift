@@ -194,3 +194,62 @@ AMZN Mktp US
         #expect(AmazonOrders.parse("Sign in\nEmail or mobile phone number", calendar: Fix.calendar).isEmpty)
     }
 }
+
+/// The page as Amazon redesigned it in October 2026: an abbreviated month, the date on the entry itself rather than
+/// heading a group, and the amount *after* the order number instead of before it.
+private let redesigned = """
+Transactions
+View gift card activity to see gift card refunds.
+Oct 21, 2026·Whole Foods SCH 10276
+Prime Visa••••9174
+Order #5f90e484-5cfe-40a2-991e-e657b70eab32
+-$292.83
+Charged
+Oct 20, 2026·AMZN Mktp US
+Prime Visa••••9174
+Order #113-4775922-6221063
+-$30.83
+Charged
+Oct 19, 2026·AMZN Mktp US
+Prime Visa••••9174
+Order #113-7130720-5861006
+-$281.44
+Charged
+Oct 19, 2026·AMZN Mktp US
+Amazon Chase Co-Branded Credit Card Rewards
+Order #113-7931323-9567425
+-$93.94
+Charged
+"""
+
+@Suite("Amazon's redesigned payments page") struct AmazonRedesignTests {
+
+    @Test func readsAnAbbreviatedMonth() {
+        // The whole reason orders stopped being read: "Oct 21, 2026" didn't match, and an order with no date is dropped.
+        let orders = AmazonOrders.parse(redesigned, calendar: Fix.calendar)
+        #expect(orders.count == 3)                                  // the Whole Foods UUID still isn't openable
+        #expect(orders[0].date == Fix.calendar.startOfDay(for: Fix.day(2026, 10, 20)))
+    }
+
+    @Test func takesTheAmountThatFollowsTheOrder() {
+        let orders = AmazonOrders.parse(redesigned, calendar: Fix.calendar)
+        #expect(orders.map(\.id) == ["113-4775922-6221063", "113-7130720-5861006", "113-7931323-9567425"])
+        #expect(orders.map(\.amount) == [Fix.money("-30.83"), Fix.money("-281.44"), Fix.money("-93.94")])
+    }
+
+    @Test func theRealChargesMatch() {
+        let orders = AmazonOrders.parse(redesigned, calendar: Fix.calendar)
+        let charges = [
+            Fix.tx("a", "card", "-30.83", "Amazon", on: Fix.day(2026, 10, 20), pending: true),
+            Fix.tx("b", "card", "-281.44", "Amazon", on: Fix.day(2026, 10, 20)),
+        ]
+        let paired = AmazonOrders.match(orders, to: charges, calendar: Fix.calendar)
+        #expect(paired["a"] == "113-4775922-6221063")
+        #expect(paired["b"] == "113-7130720-5861006")
+    }
+
+    @Test func theOlderLayoutStillWorks() {
+        // Both renderings are live depending on where the page is loaded, so neither may be dropped.
+        #expect(AmazonOrders.parse(page, calendar: Fix.calendar).count == 5)
+    }
+}

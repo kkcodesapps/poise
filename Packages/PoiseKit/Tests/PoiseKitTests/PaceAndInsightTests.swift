@@ -120,3 +120,114 @@ struct PaceAndInsightTests {
         #expect(cards[1].title.hasPrefix("Groceries"))    // Trader Joe's $100 + Uber $50 this week → groceries biggest
     }
 }
+
+@Suite("A card's payment stays in the forecast") struct StaleDueDateTests {
+    private let now = Fix.day(2026, 10, 9)
+
+    private func card(due: Date?, statement: String? = "500.00") -> Account {
+        Account(id: "c", name: "Prime Visa", mask: "9174", role: .credit, current: Fix.money("-2000"),
+                statementDue: due, statementAmount: statement.map(Fix.money), minimumDue: Fix.money("40"))
+    }
+
+    @Test func aDueDateStillAheadIsUsedAsIs() {
+        let next = card(due: Fix.day(2026, 10, 22)).nextDue(now: now, calendar: Fix.calendar)
+        #expect(next?.date == Fix.day(2026, 10, 22))
+        #expect(next?.isEstimate == false)
+    }
+
+    @Test func aDueDateThatHasPassedRollsToTheNextMonth() {
+        // The real case: the provider still reports Sep 30 on Oct 9, so the payment was dropped from the forecast.
+        let next = card(due: Fix.day(2026, 9, 30)).nextDue(now: now, calendar: Fix.calendar)
+        #expect(Fix.calendar.component(.month, from: next!.date) == 10)
+        #expect(Fix.calendar.component(.day, from: next!.date) == 30)
+        #expect(next?.isEstimate == true)
+    }
+
+    @Test func aVeryStaleDateRollsAsFarAsItNeeds() {
+        let next = card(due: Fix.day(2026, 6, 15)).nextDue(now: now, calendar: Fix.calendar)
+        #expect(next!.date > now)
+        #expect(Fix.calendar.component(.month, from: next!.date) == 10)
+    }
+
+    @Test func todayIsNotTreatedAsStillToCome() {
+        // Due today is already in the balance or already missed; either way the next one is a month out.
+        let next = card(due: Fix.day(2026, 10, 9)).nextDue(now: now, calendar: Fix.calendar)
+        #expect(Fix.calendar.component(.month, from: next!.date) == 11)
+    }
+
+    @Test func aCardWithNoDueDateAtAllStaysOut() {
+        #expect(card(due: nil).nextDue(now: now, calendar: Fix.calendar) == nil)
+    }
+
+    @Test func theRolledPaymentActuallyReachesTheForecast() {
+        let stale = card(due: Fix.day(2026, 9, 30))
+        let days = CashflowEngine.nextDays(30, accounts: [Fix.checking, stale], streams: [], transactions: [],
+                                           now: now, calendar: Fix.calendar)
+        let line = days.flatMap(\.lines).first { $0.name.contains("Prime Visa") }
+        #expect(line?.amount == Fix.money("-500"))
+        #expect(line?.name.contains("estimated") == true)      // said out loud, not passed off as the bank's own date
+    }
+}
+
+@Suite("How a card is paid") struct CardPaymentTests {
+    private let now = Fix.day(2026, 10, 9)
+
+    /// The real shape of the Prime Visa: a statement that closed at $4,020.25 and $2,292.48 charged since.
+    private func visa(_ pays: CardPayment?, fixed: String? = nil) -> Account {
+        Account(id: "visa", name: "Prime Visa", mask: "9174", role: .credit, current: Fix.money("6312.73"),
+                statementDue: Fix.day(2026, 10, 22), statementAmount: Fix.money("4020.25"), minimumDue: Fix.money("40"),
+                pays: pays, paysFixedAmount: fixed.map(Fix.money))
+    }
+
+    @Test func theStatementBalanceIsWhatClosed() {
+        #expect(visa(.statement).statementPayment() == Fix.money("4020.25"))
+    }
+
+    @Test func theWholeBalanceIncludesWhatHasBeenSpentSince() {
+        // $2,292.48 more than the statement — the difference this choice exists for.
+        #expect(visa(.full).statementPayment() == Fix.money("6312.73"))
+    }
+
+    @Test func theMinimumIsTheMinimum() {
+        #expect(visa(.minimum).statementPayment() == Fix.money("40"))
+    }
+
+    @Test func aSetAmountIsUsedAsGiven() {
+        #expect(visa(.fixed, fixed: "500").statementPayment() == Fix.money("500"))
+        #expect(visa(.fixed).statementPayment() == nil)          // nothing entered yet: nothing claimed
+    }
+
+    @Test func aCardTheUserHasNotDecidedAboutFollowsTheDefault() {
+        #expect(visa(nil).statementPayment(default: .minimum) == Fix.money("40"))
+        #expect(visa(nil).statementPayment(default: .statement) == Fix.money("4020.25"))
+        // And a card that has decided ignores the default entirely.
+        #expect(visa(.minimum).statementPayment(default: .full) == Fix.money("40"))
+    }
+
+    @Test func theWholeBalanceIsTheDebtNotTheCreditLeft() {
+        // Caught on a real screen: a card owing $1,284 against a $12,000 limit reports $10,715 *available*, and
+        // "the whole balance" offered to pay that off.
+        let card = Account(id: "a", name: "Apple Card", role: .credit, available: Fix.money("10715.84"),
+                           current: Fix.money("1284.16"), statementDue: Fix.day(2026, 10, 30),
+                           minimumDue: Fix.money("25"), pays: .full)
+        #expect(card.statementPayment() == Fix.money("1284.16"))
+    }
+
+    @Test func aCardReportedNegativeIsReadTheSameWay() {
+        // Providers disagree on the sign of what's owed; the forecast must not.
+        let negative = Account(id: "n", name: "Card", role: .credit, current: Fix.money("-6312.73"),
+                               statementDue: Fix.day(2026, 10, 22), minimumDue: Fix.money("40"), pays: .full)
+        #expect(negative.statementPayment() == Fix.money("6312.73"))
+    }
+
+    @Test func eachCardIsForecastItsOwnWay() {
+        // Two cards, two choices, both in the same fortnight — the thing one global toggle couldn't express.
+        let apple = Account(id: "apple", name: "Apple Card", role: .credit, current: Fix.money("6612.11"),
+                            statementDue: Fix.day(2026, 10, 16), minimumDue: Fix.money("67.62"), pays: .minimum)
+        let days = CashflowEngine.nextDays(30, accounts: [Fix.checking, visa(.statement), apple],
+                                           streams: [], transactions: [], now: now, calendar: Fix.calendar)
+        let lines = days.flatMap(\.lines)
+        #expect(lines.first { $0.name.contains("Prime Visa") }?.amount == Fix.money("-4020.25"))
+        #expect(lines.first { $0.name.contains("Apple Card") }?.amount == Fix.money("-67.62"))
+    }
+}

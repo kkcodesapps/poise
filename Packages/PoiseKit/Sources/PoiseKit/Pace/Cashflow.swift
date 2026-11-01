@@ -20,16 +20,18 @@ public struct CashflowDay: Hashable, Sendable, Identifiable {
 }
 
 public enum CashflowEngine {
-    public static func nextDays(_ count: Int = 14, accounts: [Account], streams: [RecurringStream], transactions: [Transaction], now: Date, calendar: Calendar = .current, paysCardsInFull: Bool = true) -> [CashflowDay] {
+    public static func nextDays(_ count: Int = 14, accounts: [Account], streams: [RecurringStream], transactions: [Transaction], now: Date, calendar: Calendar = .current, newCardsPay: CardPayment = .statement) -> [CashflowDay] {
         let today = calendar.startOfDay(for: now)
         var balance = accounts.filter { $0.role == .spending }.reduce(Decimal(0)) { $0 + $1.balance }
         let end = calendar.date(byAdding: .day, value: count - 1, to: today)!
         var byDay: [Date: [CashflowDay.Line]] = [:]
         // Card statements leave checking on their due date. Card payments never form streams, so nothing is counted twice.
         for a in accounts where !a.hidden {
-            guard let due = a.statementDue, let amount = a.statementPayment(paysInFull: paysCardsInFull) else { continue }
-            let day = calendar.startOfDay(for: due)
-            if day > today, day <= end { byDay[day, default: []].append(.init(name: "\(a.name) statement", amount: -amount)) }
+            guard let next = a.nextDue(now: now, calendar: calendar), let amount = a.statementPayment(default: newCardsPay) else { continue }
+            let day = calendar.startOfDay(for: next.date)
+            if day > today, day <= end {
+                byDay[day, default: []].append(.init(name: "\(a.name) statement\(next.isEstimate ? " (estimated)" : "")", amount: -amount))
+            }
         }
         let cards = Dictionary(uniqueKeysWithValues: accounts.filter { $0.role == .credit }.map { ($0.id, $0.name) })
         for s in streams {
