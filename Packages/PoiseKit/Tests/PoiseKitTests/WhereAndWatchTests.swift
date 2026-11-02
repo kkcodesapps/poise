@@ -139,3 +139,27 @@ struct WhereAndWatchTests {
         #expect(out[0].status == .arrived && out[0].resolvedTransactionID == "right")
     }
 }
+
+@Suite("What one card was spent at") struct CardMerchantTests {
+    private let october = DateInterval(start: Fix.day(2026, 10, 1), end: Fix.day(2026, 11, 1))
+
+    @Test func ranksMerchantsAcrossCategories() {
+        let rows = [
+            Fix.tx("a", "card", "-70.00", "Amazon", on: Fix.day(2026, 10, 3)),
+            Fix.tx("b", "card", "-50.00", "Amazon", on: Fix.day(2026, 10, 9)),
+            Fix.tx("c", "card", "-38.40", "DoorDash", on: Fix.day(2026, 10, 12)),
+            Fix.tx("d", "card", "-99.00", "Amazon", on: Fix.day(2026, 9, 28)),          // September
+        ]
+        let ranked = CategoryBreakdown.merchants(transactions: rows, window: october)
+        #expect(ranked.map(\.count) == [2, 1])
+        #expect(ranked[0].amount == Fix.money("120.00"))
+    }
+
+    @Test func leavesOutWhatIsNotSpending() {
+        let rows = [
+            Fix.tx("pay", "card", "500.00", "Payment Thank You", on: Fix.day(2026, 10, 5), kind: .ccPayment),
+            Fix.tx("ref", "card", "24.89", "Amazon", on: Fix.day(2026, 10, 6), kind: .refund),
+        ]
+        #expect(CategoryBreakdown.merchants(transactions: rows, window: october).isEmpty)
+    }
+}

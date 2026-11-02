@@ -1,7 +1,7 @@
 import type { PlaidAccount, PlaidTransaction } from "./plaid.ts";
 
 export type Kind = "spend" | "income" | "transfer" | "cc_payment" | "refund" | "untracked";
-export type Category = "home" | "groceries" | "dining" | "transport" | "shopping" | "subscriptions" | "health" | "fun" | "other";
+export type Category = "home" | "groceries" | "dining" | "transport" | "shopping" | "entertainment" | "tech" | "health" | "fun" | "other";
 export type Role = "spending" | "savings" | "credit" | "other";
 
 /** Account role from the provider's type/subtype. The user can change it later. */
@@ -15,15 +15,22 @@ export function roleFor(a: PlaidAccount): Role {
   return "other";
 }
 
-/** Nine buckets from Plaid's personal finance category. Merchant rules override this at sync time. */
+/** Ten buckets from Plaid's personal finance category. Merchant rules override this at sync time. */
 export function classify(t: PlaidTransaction): { kind: Kind; category: Category | null } {
-  return classifyCategory(t.personal_finance_category?.primary ?? "", t.personal_finance_category?.detailed ?? "", t.amount < 0);
+  const merchant = t.merchant_name ?? t.name;
+  return classifyCategory(t.personal_finance_category?.primary ?? "", t.personal_finance_category?.detailed ?? "", t.amount < 0, merchant);
 }
 
+/** Merchants that are tech whatever the bank calls them: Plaid files Apple's App Store and iCloud as music. */
+const techMerchants = /^(apple|icloud|google (one|storage|cloud|workspace)|microsoft|adobe|dropbox|github|openai|chatgpt)( |$)/;
+
 /** The one mapping every source funnels through, so the same merchant lands in the same bucket whichever card it was on. */
-export function classifyCategory(primary: string, detailed: string, inflow: boolean): { kind: Kind; category: Category | null } {
+export function classifyCategory(primary: string, detailed: string, inflow: boolean, merchant = ""): { kind: Kind; category: Category | null } {
   const spend = (category: Category): { kind: Kind; category: Category | null } =>
     inflow ? { kind: "refund", category } : { kind: "spend", category };   // money back at a spend category is a refund
+  // Whether a charge repeats (subscription or bill) is worked out on the phone from the stream; a category only says
+  // what it was for. So a known tech merchant is Tech here, and Netflix is Entertainment, however often they bill.
+  if (techMerchants.test(merchantKey(merchant)) && !["INCOME", "TRANSFER_IN", "TRANSFER_OUT", "LOAN_PAYMENTS", "BANK_FEES"].includes(primary)) return spend("tech");
 
   switch (primary) {
     case "INCOME": return { kind: "income", category: null };
@@ -41,9 +48,9 @@ export function classifyCategory(primary: string, detailed: string, inflow: bool
     case "HOME_IMPROVEMENT": return spend("home");
     case "MEDICAL":
     case "PERSONAL_CARE": return spend("health");
-    case "GENERAL_MERCHANDISE": return spend("shopping");
+    case "GENERAL_MERCHANDISE": return spend(detailed === "GENERAL_MERCHANDISE_ELECTRONICS" ? "tech" : "shopping");
     case "ENTERTAINMENT":
-      return spend(/TV_AND_MOVIES|MUSIC_AND_AUDIO|VIDEO_GAMES/.test(detailed) ? "subscriptions" : "fun");
+      return spend(/TV_AND_MOVIES|MUSIC_AND_AUDIO|VIDEO_GAMES/.test(detailed) ? "entertainment" : "fun");
     case "GENERAL_SERVICES": return spend("other");
     default:
       if (inflow) return { kind: "income", category: null };

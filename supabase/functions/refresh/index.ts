@@ -4,9 +4,14 @@ import { decrypt } from "../_shared/crypto.ts";
 import { admin, userFrom } from "../_shared/db.ts";
 import { upsertAccounts, type ItemRow } from "../_shared/sync.ts";
 import { updateStatements } from "../_shared/liabilities.ts";
+import { recordConsent } from "../_shared/itemdiag.ts";
 
-// On-demand freshness: fresh balances now, and a provider-side transaction refresh (the webhook brings the rows).
-// Rate-limited per item so foreground / pull-to-refresh can't run up the bill.
+declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void };
+
+// On-demand freshness: asks each bank for anything new (the webhook brings the rows) and for fresh balances.
+// Rate-limited per item so foreground / pull-to-refresh can't run up the bill. It answers as soon as the banks are
+// marked asked; the asking itself runs after the reply, because Plaid holds /transactions/refresh open while it talks to
+// the bank — about 20 seconds for Barclays — and a pull used to wait out every bank in turn, a minute in all.
 const MIN_INTERVAL_MS = 15 * 60 * 1000;
 
 interface Liabilities { liabilities?: { credit?: { account_id: string; next_payment_due_date: string | null; minimum_payment_amount: number | null; last_statement_balance: number | null }[] } }
@@ -32,6 +37,22 @@ async function backfillLogos(db: ReturnType<typeof admin>, item: ItemRow, token:
   } catch { /* try again next refresh */ }
 }
 
+/** One bank: the refresh that brings new rows, then fresh balances, due dates, what it shares, and old logos once. */
+async function ask(db: ReturnType<typeof admin>, item: ItemRow & { logos_backfilled_at: string | null }, trigger: string) {
+  try {
+    const token = await decrypt(item.access_token_enc);
+    await plaid("/transactions/refresh", { access_token: token });
+    await db.from("refresh_log").insert({ item_id: item.id, trigger, cost_units: 1 });
+    const bal = await plaid<{ accounts: PlaidAccount[] }>("/accounts/balance/get", { access_token: token });
+    await upsertAccounts(db, item, bal.accounts);
+    await updateStatements(db, item, token);
+    await recordConsent(db, item, token);
+    if (!item.logos_backfilled_at) await backfillLogos(db, item, token);
+  } catch (e) {
+    if (e instanceof PlaidError && e.code === "ITEM_LOGIN_REQUIRED") await db.from("items").update({ status: "relink" }).eq("id", item.id);
+  }
+}
+
 Deno.serve(async (req) => {
   const user = await userFrom(req);
   if (!user) return json({ error: "unauthorized" }, 401);
@@ -42,23 +63,15 @@ Deno.serve(async (req) => {
     .eq("user_id", user.id).eq("provider", "plaid").neq("status", "error");
 
   const results: Record<string, string> = {};
+  const work: Promise<unknown>[] = [];
   for (const item of items ?? []) {
     const age = item.last_refreshed_at ? Date.now() - new Date(item.last_refreshed_at).getTime() : Infinity;
     if (!force && age < MIN_INTERVAL_MS) { results[item.id] = "recent"; continue; }
-    try {
-      const token = await decrypt(item.access_token_enc);
-      const bal = await plaid<{ accounts: PlaidAccount[] }>("/accounts/balance/get", { access_token: token });
-      await upsertAccounts(db, item as ItemRow, bal.accounts);
-      await updateStatements(db, item as ItemRow, token);
-      if (!item.logos_backfilled_at) await backfillLogos(db, item as ItemRow, token);
-      await plaid("/transactions/refresh", { access_token: token });
-      await db.from("items").update({ last_refreshed_at: new Date().toISOString() }).eq("id", item.id);
-      await db.from("refresh_log").insert({ item_id: item.id, trigger, cost_units: 1 });
-      results[item.id] = "refreshed";
-    } catch (e) {
-      results[item.id] = e instanceof PlaidError ? e.code : "error";
-      if (e instanceof PlaidError && e.code === "ITEM_LOGIN_REQUIRED") await db.from("items").update({ status: "relink" }).eq("id", item.id);
-    }
+    // Marked before the reply, so a second pull straight after is "recent" rather than a second bill.
+    await db.from("items").update({ last_refreshed_at: new Date().toISOString() }).eq("id", item.id);
+    results[item.id] = "refreshed";
+    work.push(ask(db, item as ItemRow & { logos_backfilled_at: string | null }, trigger));
   }
+  EdgeRuntime.waitUntil(Promise.allSettled(work));
   return json({ results });
 });

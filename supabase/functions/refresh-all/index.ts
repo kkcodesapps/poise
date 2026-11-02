@@ -4,6 +4,7 @@ import { decrypt } from "../_shared/crypto.ts";
 import { admin } from "../_shared/db.ts";
 import { upsertAccounts, type ItemRow } from "../_shared/sync.ts";
 import { updateStatements } from "../_shared/liabilities.ts";
+import { recordConsent } from "../_shared/itemdiag.ts";
 
 // Freshness without anyone asking for it. A schedule calls this every hour of the waking day; it asks each bank for
 // anything new, and Plaid's webhook brings the rows and sends the push — so a charge reaches the phone with the app
@@ -44,6 +45,7 @@ Deno.serve(async (req) => {
       await upsertAccounts(db, item as ItemRow, bal.accounts);
       // Due dates move every month, and Next 14 is built on them.
       await updateStatements(db, item as ItemRow, token);
+      await recordConsent(db, item as ItemRow, token);
       await plaid("/transactions/refresh", { access_token: token });
       await db.from("items").update({ last_refreshed_at: new Date().toISOString() }).eq("id", item.id);
       await db.from("refresh_log").insert({ item_id: item.id, trigger: "scheduled", cost_units: 1 });

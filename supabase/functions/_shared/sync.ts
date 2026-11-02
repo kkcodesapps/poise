@@ -77,6 +77,7 @@ export async function syncItem(db: SupabaseClient, item: ItemRow, notify = true)
         merchant,
         raw_name: t.name,
         authorized_date: t.authorized_date ?? null,
+        authorized_at: realTime(t.authorized_datetime),
         posted_date: t.date,
         kind: ruleKind(rule?.kind, t.amount < 0) ?? auto.kind,
         category: rule?.category ?? auto.category,
@@ -94,6 +95,8 @@ export async function syncItem(db: SupabaseClient, item: ItemRow, notify = true)
     // A posted charge arrives as a *new* row, so anything the phone wrote onto the pending one — the merchant's order
     // number — belongs to it and has to move across, or every Amazon order is lost the moment the charge settles.
     await carryOrderRefs(db, item.user_id, written);
+    // And the time it was first seen, which caps the day it's shown on.
+    await carrySeen(db, item.user_id, written);
     // Removals first: a charge that just posted arrives as a new row while its pending twin is still here, and a
     // notification sent before the twin is gone reads it as being charged twice.
     if (res.removed.length) {
@@ -118,6 +121,28 @@ export async function syncItem(db: SupabaseClient, item: ItemRow, notify = true)
   return totals;
 }
 
+
+/** A provider timestamp worth trusting. Some banks send midnight UTC when they only know the date, which would read as
+ *  the evening before in America; those are left to the date. */
+export function realTime(iso: string | null | undefined): string | null {
+  if (!iso || /T00:00:00(\.0+)?(Z|[+-]00:?00)$/.test(iso)) return null;
+  return iso;
+}
+
+/** Gives the posted row the time its pending twin was first seen, when that's earlier. */
+async function carrySeen(db: SupabaseClient, userID: string, written: WrittenRow[]) {
+  const replacing = written.filter((r) => r.pending_txn_id);
+  if (!replacing.length) return;
+  const { data: previous } = await db.from("transactions")
+    .select("provider_txn_id, account_id, seen_at")
+    .eq("user_id", userID)
+    .in("provider_txn_id", replacing.map((r) => r.pending_txn_id as string));
+  for (const old of previous ?? []) {
+    const row = replacing.find((r) => r.pending_txn_id === old.provider_txn_id && r.account_id === old.account_id);
+    if (!row) continue;
+    await db.from("transactions").update({ seen_at: old.seen_at }).eq("id", row.id).gt("seen_at", old.seen_at);
+  }
+}
 
 /** Moves a merchant's order number from the pending row to the posted row that replaces it. */
 async function carryOrderRefs(db: SupabaseClient, userID: string, written: WrittenRow[]) {

@@ -28,7 +28,7 @@ struct PriceTests {
         // Measured on the real feed: at the old bar Amazon looked like an item. A basket has no price.
         let amazon = [("7.78", 3), ("151.19", 4), ("48.20", 5), ("754.92", 6), ("162.36", 7), ("34.99", 8)].enumerated()
             .map { i, p in Fix.tx("z\(i)", "card", "-\(p.0)", "Amazon", on: Fix.day(2026, p.1, 12), category: .shopping) }
-        let netflix = (0..<5).map { Fix.tx("n\($0)", "card", $0 > 2 ? "-26.99" : "-24.99", "Netflix", on: Fix.day(2026, 4 + $0, 13), category: .subscriptions) }
+        let netflix = (0..<5).map { Fix.tx("n\($0)", "card", $0 > 2 ? "-26.99" : "-24.99", "Netflix", on: Fix.day(2026, 4 + $0, 13), category: .entertainment) }
         let items = PriceTracker.items(in: amazon + netflix, now: now, calendar: Fix.calendar)
         #expect(items.map(\.id) == ["merchant|netflix"])
     }
@@ -46,8 +46,8 @@ struct PriceTests {
 
     @Test func aPlanIsItsOwnRunAndTheRestIsUsage() {
         // Cursor: $200 on the 19th every month, plus pay-as-you-go charges in between.
-        var rows = (0..<4).map { Fix.tx("plan\($0)", "card", "-200", "Cursor", on: Fix.day(2026, 6 + $0, 19), category: .subscriptions) }
-        rows += [("63.20", 8, 18), ("80.15", 8, 22), ("100.05", 9, 14), ("100.27", 9, 16)].enumerated().map { i, u in Fix.tx("use\(i)", "card", "-\(u.0)", "Cursor", on: Fix.day(2026, u.1, u.2), category: .subscriptions) }
+        var rows = (0..<4).map { Fix.tx("plan\($0)", "card", "-200", "Cursor", on: Fix.day(2026, 6 + $0, 19), category: .entertainment) }
+        rows += [("63.20", 8, 18), ("80.15", 8, 22), ("100.05", 9, 14), ("100.27", 9, 16)].enumerated().map { i, u in Fix.tx("use\(i)", "card", "-\(u.0)", "Cursor", on: Fix.day(2026, u.1, u.2), category: .entertainment) }
         let streams = RecurringDetector.detect(rows, now: now, calendar: Fix.calendar)
         let items = PriceTracker.items(in: rows, streams: streams, now: now, calendar: Fix.calendar)
         // One page, not two: the plan is the run, the extras ride along as its usage.

@@ -38,6 +38,7 @@ export interface PlaidTransaction {
   iso_currency_code?: string | null;
   date: string;
   authorized_date?: string | null;
+  authorized_datetime?: string | null;
   name: string;
   merchant_name?: string | null;
   pending: boolean;

@@ -194,8 +194,8 @@ export async function applyWallet(db: SupabaseClient, item: WalletItem, body: Wa
     const liability = liabilityIDs.has(accountID);
     const out = outflow(t);
     const [primary, detailed] = categoryFor(t, liability, out);
-    const auto = classifyCategory(primary, detailed, !out);
     const merchant = merchantName(t);
+    const auto = classifyCategory(primary, detailed, !out, merchant);
     const rule = rules.get(merchantKey(merchant));
     return [{
       account_id: accountID,

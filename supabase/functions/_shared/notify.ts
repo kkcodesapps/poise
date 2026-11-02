@@ -13,7 +13,7 @@ export interface WrittenRow {
 const money = (n: number) => `$${Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
 const money0 = (n: number) => `$${Math.round(Math.abs(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
 const pretty = (s: string) => { const t = s.replace(/[*#/]+/g, " ").replace(/\s+/g, " ").trim(); return /^[^a-z]*$/.test(t) && t.replace(/[^A-Za-z]/g, "").length > 3 ? t.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()) : t; };
-const builtIn: Record<string, string> = { home: "Home", groceries: "Groceries", dining: "Dining", transport: "Transport", shopping: "Shopping", subscriptions: "Subscriptions", health: "Health", fun: "Fun", other: "Other" };
+const builtIn: Record<string, string> = { home: "Home", groceries: "Groceries", dining: "Dining", transport: "Transport", shopping: "Shopping", entertainment: "Entertainment", tech: "Tech", health: "Health", fun: "Fun", other: "Other" };
 
 export async function notifyAfterSync(db: SupabaseClient, userID: string, written: WrittenRow[], opts: { firstSync: boolean }) {
   if (opts.firstSync || !written.length) return;
