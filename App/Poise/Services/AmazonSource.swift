@@ -47,6 +47,11 @@ final class AmazonSource: NSObject {
         return web
     }()
 
+    /// A third view over the same cookies, phone-sized like the sign-in one, that nobody ever sees. It does in the
+    /// background what tapping "Sign in" did in front of the user — see `refreshSession`.
+    private lazy var refresher: WKWebView = Self.make(desktop: false)
+    private var lastRefresh: Date?
+
     private var waiting: CheckedContinuation<Void, Error>?
     private var textOnly = false
 
@@ -162,11 +167,15 @@ final class AmazonSource: NSObject {
     ///
     /// A page is about fifteen orders and a fortnight, so how far to walk depends on what's still missing rather than
     /// on a fixed count: it stops once it's read past `earliest`, or Amazon runs out of pages, or the cap is reached.
-    func read(back earliest: Date?, maxPages: Int = 3, onPage: (@MainActor (Int, Date?) -> Void)? = nil) async throws -> [AmazonOrder] {
+    func read(back earliest: Date?, maxPages: Int = 3, refreshing: Bool = true, onPage: (@MainActor (Int, Date?) -> Void)? = nil) async throws -> [AmazonOrder] {
         await useTextOnly()
         try await load(AmazonOrders.transactionsPage)
         switch await landing() {
-        case .signIn: hasLapsed = true; lastChecked = .now; throw Failure.signedOut
+        case .signIn:
+            // Most of the time the session is fine and only wants a nudge — which is all the user's tap on "Sign in"
+            // ever did. Try that first; only a form nobody but them can fill in is worth telling them about.
+            if refreshing, await refreshSession() { return try await read(back: earliest, maxPages: maxPages, refreshing: false, onPage: onPage) }
+            hasLapsed = true; lastChecked = .now; throw Failure.signedOut
         case .unknown: throw Failure.timedOut                       // slow or odd page: try again later, don't cry wolf
         case .payments: break
         }
@@ -249,7 +258,7 @@ final class AmazonSource: NSObject {
 
     /// Opens one order's own page and reads what was in it. A page load per order, so callers ask for a few at a time
     /// rather than the lot — Amazon throttles a gallop and there is no bulk view of this.
-    func readItems(for orderID: String) async throws -> AmazonOrderDetail? {
+    func readItems(for orderID: String, refreshing: Bool = true) async throws -> AmazonOrderDetail? {
         await useTextOnly()
         // Straight to where Amazon now keeps order pages, rather than through the old address and its redirect.
         try await load(Self.orderURL(orderID))
@@ -257,11 +266,13 @@ final class AmazonSource: NSObject {
         // changing, which a page in between can do for a second.
         var text = ""
         var readerAtSignIn = false
+        var asked = 0
         for _ in 0 ..< 40 {
             text = await innerText()
-            readerAtSignIn = await readerIsAtSignIn()
             if isOrderPage(text) && text.contains("Sold by") { break }
-            if readerAtSignIn { break }
+            // A form that stays, not a sign-in address passed through on the way to the order.
+            if await asksForCredentials(reader) { asked += 1 } else { asked = 0 }
+            if asked >= 4 { readerAtSignIn = true; break }
             try? await Task.sleep(for: .milliseconds(500))
         }
         var result: AmazonOrderDetail?
@@ -282,7 +293,10 @@ final class AmazonSource: NSObject {
         }
         await releaseReader()                                       // before returning, so the next order starts clean
         // The reader is the one that opened the order, so it's the one that says whether Amazon wants a sign-in.
-        if result == nil, readerAtSignIn { hasLapsed = true; throw Failure.signedOut }
+        if result == nil, readerAtSignIn {
+            if refreshing, await refreshSession() { return try await readItems(for: orderID, refreshing: false) }
+            hasLapsed = true; throw Failure.signedOut
+        }
         if result != nil { challengeOrder = nil }
         return result
     }
@@ -290,12 +304,47 @@ final class AmazonSource: NSObject {
     /// Why the last order that couldn't be read couldn't be — so a failure says what it was instead of being a zero.
     private(set) var lastItemFailure: String?
 
-    /// The same test as `isAtSignIn`, asked of the reader rather than the visible view.
-    private func readerIsAtSignIn() async -> Bool {
-        let url = reader.url?.absoluteString ?? ""
-        if url.contains("/ap/") || url.contains("signin") || url.contains("validateCaptcha") { return true }
-        let js = "!!document.querySelector('input[type=password], input[name=email], [id^=ap_email], [id^=ap_password], #auth-captcha-guess, input[name=otpCode], form[name=signIn]')"
-        return ((try? await reader.evaluateJavaScript(js)) as? Bool) ?? false
+    /// True when the page is asking for something only the user has — email, password, a one-time code, the letters
+    /// in a picture — on screen, not merely sitting at an /ap/ address. Amazon routes a perfectly good session through
+    /// its sign-in pages to refresh it, and those carry on by themselves; reading the address alone called every one of
+    /// them a sign-out, and the user's "Sign in" tap then sailed straight through without being asked for anything.
+    private func asksForCredentials(_ web: WKWebView) async -> Bool {
+        let js = """
+        (function () {
+          var q = 'input[type=password], input[name=email], input[name=password], [id^=ap_email], [id^=ap_password], #auth-captcha-guess, input[name=otpCode], input[name=code]';
+          return Array.prototype.some.call(document.querySelectorAll(q), function (e) { return e.getClientRects().length > 0; });
+        })()
+        """
+        return ((try? await web.evaluateJavaScript(js)) as? Bool) ?? false
+    }
+
+    /// Does quietly what tapping "Sign in" used to do out loud: opens the same page, phone-sized, and lets Amazon
+    /// renew the session on its own. True if it got through without a form; false if Amazon really wants the user —
+    /// a password, a code, a robot check — which is the only time they need to hear about it.
+    ///
+    /// Never the visible view: that one belongs to the user, and might be half way through a password.
+    private func refreshSession() async -> Bool {
+        if let last = lastRefresh, Date.now.timeIntervalSince(last) < 120 { return false }   // once, not in a loop
+        lastRefresh = .now
+        refresher.load(URLRequest(url: challengeOrder.map(Self.orderURL) ?? startURL, cachePolicy: .reloadIgnoringLocalCacheData))
+        defer { refresher.load(URLRequest(url: URL(string: "about:blank")!)) }
+        var clear = 0, asked = 0
+        for _ in 0 ..< 40 {                                         // twenty seconds
+            try? await Task.sleep(for: .milliseconds(500))
+            if refresher.isLoading { continue }
+            if await asksForCredentials(refresher) {
+                clear = 0; asked += 1
+                if asked >= 6 { break }                             // a form that's still there three seconds on
+                continue
+            }
+            asked = 0
+            let url = refresher.url?.absoluteString ?? ""
+            if url.isEmpty || url.contains("/ap/") || url.contains("validateCaptcha") { clear = 0; continue }
+            clear += 1
+            if clear >= 3 { log.info("amazon session renewed in the background"); return true }
+        }
+        log.info("amazon wants the user to sign in")
+        return false
     }
 
     private func isOrderPage(_ text: String) -> Bool {
@@ -316,10 +365,12 @@ final class AmazonSource: NSObject {
     /// a restart a dropped session. And only a sign-in form counts as signed out: a page still drawing, or one Amazon
     /// served slowly, is a check to try again, not a reason to tell the user to sign in.
     private func landing() async -> Landing {
+        var asked = 0
         for _ in 0 ..< 30 {
-            if await readerIsAtSignIn() { return .signIn }
             let text = await innerText()
             if isPaymentsPage(text) { return .payments }
+            if await asksForCredentials(reader) { asked += 1 } else { asked = 0 }
+            if asked >= 4 { return .signIn }                        // a form still there two seconds on
             try? await Task.sleep(for: .milliseconds(500))
         }
         return .unknown
@@ -339,7 +390,7 @@ final class AmazonSource: NSObject {
         ordersRead = 0
         pagesRead = 0
         reachedBack = nil
-        for web in [webView, reader] { web.load(URLRequest(url: URL(string: "about:blank")!)) }
+        for web in [webView, reader, refresher] { web.load(URLRequest(url: URL(string: "about:blank")!)) }
     }
 
     // MARK: the web view, waited on

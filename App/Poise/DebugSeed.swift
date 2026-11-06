@@ -112,6 +112,19 @@ enum DebugSeed {
         return "{\"transactions\": [\(row("seed-ccpay-card", card, false)),\(row("seed-ccpay-cash", cash, true))]}"
     }
 
+    /// `-seed-clearing`: an Apple Card payment the card shows today and Apple Cash hasn't paid yet, after last month's
+    /// payment that came out of Apple Cash a day later. Next 14 should take it out today as "Apple Card payment".
+    static var clearing: String {
+        let cal = Calendar.current, card = "DEB00000-0000-0000-0000-000000000001", cash = "DEB00000-0000-0000-0000-000000000002"
+        let today = cal.startOfDay(for: .now)
+        func row(_ id: String, _ acct: String, _ amount: Double, _ debit: Bool, _ back: Int) -> String {
+            let day = WalletSource.Payload.day(cal.date(byAdding: .day, value: -back, to: today)!)
+            return "{\"id\": \"\(id)\", \"accountID\": \"\(acct)\", \"amount\": \(amount), \"currency\": \"USD\", \"debit\": \(debit), \"description\": \"Bill Payment\", \"merchant\": \"Bill Payment\", \"mcc\": null, \"type\": \"billPayment\", \"status\": \"booked\", \"date\": \"\(day)\", \"postedDate\": \"\(day)\"}"
+        }
+        let rows = [row("seed-clearing-last-card", card, 64.20, false, 31), row("seed-clearing-last-cash", cash, 64.20, true, 30), row("seed-clearing-now", card, 71.35, false, 0)]
+        return "{\"transactions\": [\(rows.joined(separator: ","))]}"
+    }
+
     /// `-seed-store`: a shop whose baskets are all different (Amazon's real spread), so the merchant page shows
     /// "A store, not a price" and the way out of it.
     static var store: String {

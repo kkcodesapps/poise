@@ -3,6 +3,7 @@ import AuthenticationServices
 import CryptoKit
 import LocalAuthentication
 import Supabase
+import UIKit
 
 /// Sign in with Apple (native id-token flow) and the Face ID gate.
 enum Auth {
@@ -39,6 +40,25 @@ enum Auth {
         }
     }
 
+    /// Opening: a new user is made only on a phone no one has used yet. Where someone was signed in and the session is
+    /// gone, this returns them instead, for the signed-out screen: a new account there opens empty and looks like
+    /// everything was wiped, as it did on 2026-10-30.
+    @MainActor static func resume(client: SupabaseClient) async throws -> LastUser? {
+        if client.auth.currentSession != nil {
+            do { _ = try await client.auth.session; return nil }
+            catch {
+                // A renewal the server refused takes the session with it; a dropped connection leaves it for next time.
+                guard client.auth.currentSession == nil, let last = LastUser.stored else { throw error }
+                return last
+            }
+        }
+        // Nothing read can also mean the keychain hasn't opened yet: it does at the first unlock after a restart.
+        guard UIApplication.shared.isProtectedDataAvailable else { throw BackendError.locked }
+        if let last = LastUser.stored { return last }
+        try await client.auth.signInAnonymously()
+        return nil
+    }
+
     // MARK: Face ID
 
     static var canUseBiometrics: Bool {
@@ -51,5 +71,26 @@ enum Auth {
         context.localizedCancelTitle = "Cancel"
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else { return true }
         return (try? await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) ?? false
+    }
+}
+
+/// Who was last signed in on this phone, kept so a missing session reads as someone signed out, never as someone new.
+struct LastUser: Equatable {
+    let id: String
+    /// On an Apple ID, so Sign in with Apple brings the account back. The automatic first-launch account can't be.
+    let onAppleID: Bool
+
+    static var stored: LastUser? {
+        guard let id = UserDefaults.standard.string(forKey: "lastUserID") else { return nil }
+        return LastUser(id: id, onAppleID: UserDefaults.standard.bool(forKey: "lastUserOnAppleID"))
+    }
+    static func remember(_ user: User) {
+        UserDefaults.standard.set(user.id.uuidString, forKey: "lastUserID")
+        UserDefaults.standard.set(!user.isAnonymous, forKey: "lastUserOnAppleID")
+    }
+    /// Signing out on purpose, deleting everything and starting over: the next opening is a first one.
+    static func forget() {
+        UserDefaults.standard.removeObject(forKey: "lastUserID")
+        UserDefaults.standard.removeObject(forKey: "lastUserOnAppleID")
     }
 }
