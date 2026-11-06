@@ -52,13 +52,16 @@ struct Repository {
         async let catRows: [CategoryRow] = client.from("categories").select().order("sort").execute().value
         async let watchRows: [WatchRow] = client.from("watches").select().order("created_at", ascending: false).execute().value
         async let nameRows: [NameRule] = client.from("merchant_rules").select("matcher, display_name").not("display_name", operator: .is, value: "null").execute().value
+        // Logos the server found for merchants Plaid has none for. Never worth failing a load over.
+        async let logoRows: [LogoRow]? = try? client.rpc("my_merchant_logos").execute().value
 
         let (t, s, cats, ws, names) = try await (txnRows, streamRows, catRows, watchRows, nameRows)
         let nameFor = Dictionary(names.compactMap { r in r.display_name.map { (r.matcher, $0) } }, uniquingKeysWith: { a, _ in a })
+        let logoFor = Dictionary(((await logoRows) ?? []).map { ($0.merchant_key, $0.logo_url) }, uniquingKeysWith: { a, _ in a })
         // "As of" is when the banks were last asked, not when one last had something new: a pull that finds nothing
         // still means the screen is current, and showing the older time made a working refresh look broken.
         let lastSync = items.flatMap { [$0.last_synced_at, $0.last_refreshed_at] }.compactMap { $0.flatMap(Self.date(from:)) }.max()
-        let transactions = t.map { row -> Transaction in var m = row.model; if m.displayName == nil { m.displayName = nameFor[m.merchantKey] }; return m }
+        let transactions = t.map { row -> Transaction in var m = row.model; if m.displayName == nil { m.displayName = nameFor[m.merchantKey] }; if m.logoURL == nil { m.logoURL = logoFor[m.merchantKey] }; return m }
         return Snapshot(accounts: all.filter { !$0.hidden }, hiddenAccounts: hidden, transactions: transactions, streams: s.map(\.model), lastSync: lastSync,
                         institutions: Array(Set(items.compactMap(\.institution_name))).sorted(),
                         relinkNeeded: items.filter { $0.status == "relink" }.map { Item(id: $0.id.uuidString, institution: $0.institution_name ?? "A bank", status: $0.status, liabilitiesStatus: $0.liabilities_status) },
@@ -107,6 +110,7 @@ struct Repository {
     }
 
     private struct NameRule: Decodable { let matcher: String; let display_name: String? }
+    private struct LogoRow: Decodable { let merchant_key: String; let logo_url: String }
 
     private struct TransactionRow: Decodable {
         let id: UUID, account_id: UUID, amount: Double, merchant: String, authorized_date: String?, posted_date: String

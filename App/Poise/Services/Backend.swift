@@ -9,30 +9,31 @@ enum Backend {
     /// The app's own keychain group. The Finance extension lists it too, so a background sync runs on the same session.
     static let keychainGroup = "D6937U28B4.com.koliokolev.poise"
 
-    static let client: SupabaseClient = {
+    /// Where the session lives: on a phone, the shared keychain group, so the Finance extension is signed in as the app is.
+    static let storage: any AuthLocalStorage = {
         #if targetEnvironment(simulator)
-        SupabaseClient(supabaseURL: url, supabaseKey: publishableKey)
+        KeychainLocalStorage()
         #else
-        SupabaseClient(supabaseURL: url, supabaseKey: publishableKey,
-                       options: .init(auth: .init(storage: KeychainLocalStorage(service: "supabase.gotrue.swift", accessGroup: keychainGroup))))
+        KeychainLocalStorage(service: "supabase.gotrue.swift", accessGroup: keychainGroup)
         #endif
     }()
+    /// The library's own default key, spelled out so `SessionGuard` reads the same item it does.
+    static let storageKey = "sb-\(url.host!.split(separator: ".")[0])-auth-token"
 
-    /// Signs in if there is no session yet. Anonymous for now; Sign in with Apple comes later and links to the same user.
-    static func ensureSession() async throws {
-        if (try? await client.auth.session) != nil { return }
-        try await client.auth.signInAnonymously()
-    }
+    static let client = SupabaseClient(supabaseURL: url, supabaseKey: publishableKey,
+                                       options: .init(auth: .init(storage: storage, storageKey: storageKey), global: .init(session: SessionGuard.session)))
 }
 
 enum BackendError: LocalizedError {
     case noWindow
     case link(String)
+    case locked
 
     var errorDescription: String? {
         switch self {
         case .noWindow: "Couldn’t find a window to present the bank link."
         case .link(let message): message
+        case .locked: "Unlock your iPhone and Poise will open."
         }
     }
 }

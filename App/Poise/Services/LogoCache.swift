@@ -22,6 +22,9 @@ final class LogoCache: @unchecked Sendable {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
 
+    /// A logo from our own `logos` bucket (found by name, not given by the bank) rather than one of Plaid's.
+    static func isBrandMark(_ url: URL) -> Bool { url.path.contains("/storage/v1/object/public/logos/") }
+
     /// Only what's already in memory — cheap enough to call while drawing.
     func cached(_ url: URL) -> UIImage? { memory.object(forKey: url.absoluteString as NSString) }
 
