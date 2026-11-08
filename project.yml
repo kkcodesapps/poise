@@ -26,7 +26,7 @@ settings:
     DEVELOPMENT_TEAM: D6937U28B4
     CODE_SIGN_STYLE: Automatic
     SWIFT_STRICT_CONCURRENCY: complete
-    MARKETING_VERSION: "0.14.1"
+    MARKETING_VERSION: "0.15.2"
     CURRENT_PROJECT_VERSION: "1"
     TARGETED_DEVICE_FAMILY: "1"
   configs:
@@ -150,6 +150,7 @@ targets:
       - path: App/PoiseFinance
       - path: App/Poise/Services/Wallet.swift
       - path: App/Poise/Services/Backend.swift
+      - path: App/Poise/Services/SessionGuard.swift
     dependencies:
       - package: Supabase
         product: Supabase

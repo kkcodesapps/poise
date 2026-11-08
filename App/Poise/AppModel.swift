@@ -182,6 +182,10 @@ final class AppModel {
     var showReview = false
     var isLocked = false
     var isAnonymous = true
+    /// Set when the session is gone from a phone that had someone signed in: the signed-out screen, in place of a new,
+    /// empty account.
+    var signedOut: LastUser?
+    private var signInWatch: Task<Void, Never>?
     /// The splash: shown from the first frame until the first load settles.
     enum LaunchPhase { case loading, failed, ready }
     var launch: LaunchPhase = .loading
@@ -265,7 +269,28 @@ final class AppModel {
         if ProcessInfo.processInfo.arguments.contains("-fail-launch") { launch = .failed; return }
         #endif
         do {
-            try await Backend.ensureSession()
+            #if DEBUG
+            let debugArgs = ProcessInfo.processInfo.arguments
+            // `-park-session` sets the stored session aside, as if it had been deleted; `-unpark-session` puts it back.
+            // First opening only: signing back in runs this again.
+            let firstOpening = signInWatch == nil
+            if firstOpening, debugArgs.contains("-park-session"), let data = try? Backend.storage.retrieve(key: Backend.storageKey) {
+                UserDefaults.standard.set(data, forKey: "parkedSession"); try? Backend.storage.remove(key: Backend.storageKey)
+            }
+            if firstOpening, debugArgs.contains("-unpark-session"), let data = UserDefaults.standard.data(forKey: "parkedSession") {
+                try? Backend.storage.store(key: Backend.storageKey, value: data); UserDefaults.standard.removeObject(forKey: "parkedSession")
+            }
+            // `-signed-out apple|auto` shows the signed-out screen over whatever is there (screenshots).
+            if let i = debugArgs.firstIndex(of: "-signed-out") {
+                signedOut = LastUser(id: "", onAppleID: i + 1 < debugArgs.count && debugArgs[i + 1] == "apple"); launch = .ready; return
+            }
+            #endif
+            watchSignIn()
+            if let last = try await Auth.resume(client: Backend.client) {
+                signedOut = last
+                launch = .ready
+                return
+            }
             await readSession()
             var loaded = false
             if let id = try? await Backend.client.auth.session.user.id.uuidString, let cached = SnapshotCache.load(for: id) {
@@ -286,7 +311,10 @@ final class AppModel {
             if settings.faceID { isLocked = true; await unlock() }
             if walletLinked { WalletSource.setBackgroundDelivery(true); Task { if await syncWallet() { await reload() } } }
             let amazon = AmazonSource.shared
-            amazonConnected = amazon.isConnected; amazonLapsed = amazon.hasLapsed; amazonCheckedAt = amazon.lastChecked
+            // A sign-out on record is checked again, quietly, before it's shown: most of them Amazon lets straight back
+            // in, and a banner for one of those only asks the user to tap a button that does nothing they can see.
+            let recheck = amazon.isConnected && amazon.hasLapsed && (amazon.lastChecked.map { Date.now.timeIntervalSince($0) > Self.lapsedRecheck } ?? true)
+            amazonConnected = amazon.isConnected; amazonLapsed = amazon.hasLapsed && !recheck; amazonCheckedAt = amazon.lastChecked
             amazonOrdersRead = amazon.ordersRead; amazonPagesRead = amazon.pagesRead; amazonReachedBack = amazon.reachedBack
             // A connected Amazon is checked on launch, at most every six hours — new charges arrive with their order.
             Task { await syncAmazonIfDue(notBefore: 6 * 3600, maxPages: 3, items: 8) }
@@ -303,6 +331,35 @@ final class AppModel {
             }
             if args.contains("-review") { showReview = true }
             if args.contains("-watching") { showWatching = true }
+            // `-stale-refresh` replays the 10-30 sign-out: renew, wait out Supabase's 10 s grace, then renew with the
+            // retired token. Without SessionGuard that ends the session; with it the request carries the current one.
+            if args.contains("-stale-refresh") {
+                Task {
+                    let log = Logger(subsystem: "com.koliokolev.poise", category: "session")
+                    guard let before = Backend.client.auth.currentSession else { return log.error("stale-refresh: no session") }
+                    do {
+                        let renewed = try await Backend.client.auth.refreshSession()
+                        log.notice("stale-refresh: renewed, waiting 15 s")
+                        try await Task.sleep(for: .seconds(15))
+                        let again = try await Backend.client.auth.refreshSession(refreshToken: before.refreshToken)
+                        let rows = try await Backend.client.from("accounts").select("id", head: true, count: .exact).execute().count ?? -1
+                        log.notice("stale-refresh: PASS user \(again.user.id == renewed.user.id) token moved \(again.refreshToken != renewed.refreshToken) accounts \(rows)")
+                    } catch {
+                        log.error("stale-refresh: FAIL \(error.localizedDescription, privacy: .public) session left \(Backend.client.auth.currentSession != nil)")
+                    }
+                }
+            }
+            // `-lose-session` drops the session 6 s in, the way a failed renewal in the Finance extension would, then
+            // reloads: the signed-out screen should come up over Home. `-unpark-session` brings the session back.
+            if args.contains("-lose-session") {
+                Task {
+                    try? await Task.sleep(for: .seconds(6))
+                    if let data = try? Backend.storage.retrieve(key: Backend.storageKey) {
+                        UserDefaults.standard.set(data, forKey: "parkedSession"); try? Backend.storage.remove(key: Backend.storageKey)
+                    }
+                    await reload()
+                }
+            }
             if args.contains("-amazon-progress") { amazonReading = true; amazonItemsTotal = 71; amazonItemsDone = 30 }
             // `-card <name>` opens a card's page from Home, so it can be looked at without tapping through; add `-look`
             // for its Look & name sheet instead.
@@ -424,6 +481,10 @@ final class AppModel {
                 try await Backend.client.functions.invoke("financekit-sync", options: FunctionInvokeOptions(headers: ["content-type": "application/json"], body: DebugSeed.cardPayment))
                 await reload()
             }
+            if args.contains("-seed-clearing") {
+                try await Backend.client.functions.invoke("financekit-sync", options: FunctionInvokeOptions(headers: ["content-type": "application/json"], body: DebugSeed.clearing))
+                await reload()
+            }
             if args.contains("-seed-leaks") {
                 try await Backend.client.functions.invoke("financekit-sync", options: FunctionInvokeOptions(headers: ["content-type": "application/json"], body: DebugSeed.leaks))
                 await reload()
@@ -460,6 +521,9 @@ final class AppModel {
 
     @discardableResult
     func reload(retry: Bool = true) async -> Bool {
+        // The Finance extension can lose the shared session while the app sleeps. Asked without one, the server answers
+        // with nothing, which would look like an empty account.
+        guard Backend.client.auth.currentSession != nil else { lostSession(); return false }
         isLoading = true; defer { isLoading = false }
         do {
             async let snap = repository.load()
@@ -554,6 +618,7 @@ final class AppModel {
             return 0
         } catch {
             log.error("amazon read failed: \(error.localizedDescription, privacy: .public)")
+            amazonLapsed = source.hasLapsed                         // a slow page settles nothing either way
             return 0
         }
     }
@@ -687,12 +752,16 @@ final class AppModel {
     @discardableResult
     func syncAmazonIfDue(notBefore seconds: TimeInterval, maxPages: Int? = nil, items: Int? = nil) async -> Int {
         guard amazonConnected, !amazonReading else { return 0 }
-        // A session Amazon has dropped is still worth trying now and then — it may have let us back in, and one page
-        // load settles it — but not on every pull, which would be a slow wait for a known answer.
-        let gate = amazonLapsed ? max(seconds, 6 * 3600) : seconds
-        if let last = amazonCheckedAt, Date.now.timeIntervalSince(last) < gate { return 0 }
+        // A session on record as dropped is tried again every half hour: the read renews it in the background when
+        // Amazon allows, so the banner only stays for a sign-in that really needs the user.
+        let source = AmazonSource.shared
+        let gate = source.hasLapsed ? Self.lapsedRecheck : seconds
+        if let last = amazonCheckedAt, Date.now.timeIntervalSince(last) < gate { amazonLapsed = source.hasLapsed; return 0 }
         return await syncAmazon(maxPages: maxPages, items: items)
     }
+
+    /// How long a sign-out on record waits before it's quietly tried again.
+    static let lapsedRecheck: TimeInterval = 30 * 60
 
     /// Forgets the session and every order number it found. The charges themselves are untouched.
     func disconnectAmazon() async {
@@ -767,6 +836,7 @@ final class AppModel {
 
     func readSession() async {
         let session = try? await Backend.client.auth.session
+        if let user = session?.user { LastUser.remember(user) }
         isAnonymous = session?.user.isAnonymous ?? true
         accountName = (session?.user.userMetadata["full_name"]?.stringValue).flatMap { $0.isEmpty ? nil : $0 } ?? session?.user.email
     }
@@ -807,15 +877,52 @@ final class AppModel {
     }
 
     func signOut() async {
+        LastUser.forget()
         try? await Backend.client.auth.signOut()
         resetState()
         await start()
+    }
+
+    /// Signed in again from the signed-out screen. Anyone other than who was here starts clean rather than on their screens.
+    func signedBackIn() async {
+        if Backend.client.auth.currentUser?.id.uuidString != signedOut?.id { resetState() }
+        signedOut = nil
+        await start()
+    }
+
+    /// "Start over with a new account" on the signed-out screen: the only way a phone that had someone gets a new user.
+    func startOver() async {
+        LastUser.forget()
+        signedOut = nil
+        resetState()
+        await start()
+    }
+
+    /// A session that ends while Poise is open (the server refused a renewal, here or in the Finance extension) shows the
+    /// signed-out screen. Signing out on purpose forgets the user first, so it goes to the welcome screen instead.
+    private func watchSignIn() {
+        guard signInWatch == nil else { return }
+        signInWatch = Task { [weak self] in
+            for await (event, _) in Backend.client.auth.authStateChanges where event == .signedOut {
+                self?.lostSession()
+            }
+        }
+    }
+
+    private func lostSession() {
+        // A locked phone can fail to read a session that's there; only an unlocked one's "none" is believed.
+        guard signedOut == nil, let last = LastUser.stored, UIApplication.shared.isProtectedDataAvailable,
+              Backend.client.auth.currentSession == nil else { return }
+        showProfile = false; selectedTransaction = nil; selectedStream = nil; selectedMerchant = nil; selectedPriceItem = nil
+        showSince = false; showReview = false
+        signedOut = last
     }
 
     /// Revokes every bank connection and deletes the user server-side, then starts over as a fresh anonymous user.
     func deleteEverything() async {
         do {
             try await Backend.client.functions.invoke("delete-account")
+            LastUser.forget()
             try? await Backend.client.auth.signOut()
             UserDefaults.standard.removeObject(forKey: "acknowledgedInsights")
             acknowledged = []
@@ -853,6 +960,8 @@ final class AppModel {
 
     /// App came to the foreground: refresh if the last one is older than the policy allows (15 min), else just reload.
     func becameActive() async {
+        // An opening that couldn't finish (offline, or a phone not yet unlocked since it restarted) tries again.
+        if launch == .failed { await start(); return }
         rollDay()
         await refreshPushStatus()
         if settings.faceID, !isLocked { isLocked = true; await unlock() }
@@ -903,8 +1012,8 @@ final class AppModel {
     /// iOS's wake, about once an hour: ask the banks, give their webhooks a moment, and leave the newest snapshot cached,
     /// so the next open already has it and the next pull has little left to fetch.
     func backgroundRefresh() async {
-        // Only with the session already on this phone. `ensureSession` would sign in someone new if the keychain
-        // couldn't be read, and a locked phone is exactly when it can't.
+        // Only with the session already on this phone. A background wake never signs anyone in, and a locked phone is
+        // exactly when the keychain can't be read.
         guard (try? await Backend.client.auth.session) != nil else { return }
         let before = try? await repository.bankSyncedAt()
         if await refreshBanks(trigger: "background") {
@@ -1520,6 +1629,34 @@ final class AppModel {
         acknowledged.insert(insight.id)
         UserDefaults.standard.set(Array(acknowledged), forKey: "acknowledgedInsights")
         if insight.kind == .duplicate, let key = duplicateMerchantKey(insight) { recordDuplicateStrike(key) }
+        recompute()
+    }
+
+    /// "This one's fine", answered on the row itself. Clears it — and for a charge after a cancellation, takes the
+    /// cancellation back, since paying again means they signed back up. Returns what Undo puts back.
+    func settle(_ insight: Insight) async -> @MainActor () async -> Void {
+        if insight.kind == .cancelledCharge, let s = allStreams.first(where: { insight.id.hasPrefix("cancelled-\($0.id)-") }), let on = isCancelled(s) {
+            await uncancel(s)
+            acknowledge(insight)
+            return { [weak self] in await self?.cancel(s, on: on); self?.unacknowledge(insight) }
+        }
+        let key = duplicateMerchantKey(insight)
+        let strikes = key.map { duplicateStrikes[$0] ?? 0 }
+        let muted = key.map { settings.dupMuted.contains($0) } ?? false
+        acknowledge(insight)
+        return { [weak self] in
+            guard let self else { return }
+            self.unacknowledge(insight)
+            // "Both are real" counted towards no longer asking at this merchant; Undo takes that back too.
+            guard let key, let strikes else { return }
+            var all = self.duplicateStrikes; all[key] = strikes == 0 ? nil : strikes; self.duplicateStrikes = all
+            if !muted, self.settings.dupMuted.contains(key) { var d = self.settings; d.dupMuted.removeAll { $0 == key }; await self.save(d) }
+        }
+    }
+
+    func unacknowledge(_ insight: Insight) {
+        acknowledged.remove(insight.id)
+        UserDefaults.standard.set(Array(acknowledged), forKey: "acknowledgedInsights")
         recompute()
     }
 

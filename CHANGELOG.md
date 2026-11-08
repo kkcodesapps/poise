@@ -2,6 +2,33 @@
 
 Every TestFlight build bumps the version; the section for it becomes the build's "What to Test" notes.
 
+## 0.15.2 — 2026-11-05
+
+- If Poise ever loses your sign-in, it says so. Until now it quietly started a new, empty account, which looked like everything had been wiped. Now it shows "You've been signed out." If your account is on your Apple ID, Sign in with Apple opens it right where you left off. "Start over with a new account" is the only way a new account gets made.
+- Signing out from Profile still goes straight to the welcome screen.
+
+## 0.15.1 — 2026-10-30
+
+- A card payment counts on the day you make it. Apple Card shows a payment the moment it's made, but Chase takes the money a day or two later. In between, the card's statement already read as paid, so the payment was gone from its due date, and checking still held the money, so it was in no number at all. Next 14/30 and Home now take it out of checking today, as "Apple Card payment", until the bank catches up. It only does this for a card whose payments have come out of an account Poise can see.
+- Poise no longer signs itself out. The app and its background Wallet sync share one sign-in, and the key that keeps it going changes every time it renews. If one of them got paused partway and sent an old key later, Supabase took that as a stolen key and ended the session, and the phone was left with an empty account. Every renewal now uses the newest key, and saves the new one the moment it arrives.
+- A day's charges keep their amount on screen. When a name is too long for the row, the name gets cut short instead of the amount.
+
+## 0.15.0 — 2026-10-26
+
+- "Worth a look" in Leaks can be answered right on the row. Each item has two buttons: one says it's fine and clears it ("Both are real" for a double charge, "I signed back up" for a charge after you cancelled, "Expected" for a price change, "Got it" for a fee), and the other opens it. Undo shows for a few seconds after. The swipe that was meant to clear these never worked.
+- "I signed back up" also takes the cancellation back, so that subscription counts in your totals again.
+- Amazon stays signed in on its own. Amazon routinely sends a working session through its sign-in pages to refresh it, and Poise took that as being signed out — which is why tapping "Sign in" only flashed the page and closed. Poise now refreshes the session in the background, the same way that tap did, and only shows the banner when Amazon really wants your password, a code, or a robot check.
+- A sign-out from before this update is checked again quietly when you open the app, instead of showing the banner straight away.
+
+## 0.14.3 — 2026-10-26
+
+- Most charges now show the store's logo, not just the ones your bank sends a logo for. Apple Card charges never come with one, and plenty of big brands on other cards didn't either: Instacart, Apple, Spotify, Netflix, Target, Starbucks, Chipotle, Home Depot and more. Poise now looks each merchant up once, keeps the logo, and shows it everywhere that merchant appears. About 85% of charges have one now, up from under half.
+- Those logos sit on a white circle so dark logos (Apple's, for one) stay visible in dark mode. Small local places it can't be sure about keep their category icon rather than risk the wrong logo.
+
+## 0.14.2 — 2026-10-26
+
+- Leaks shows what your bills cost each month, next to subscriptions. The top is now four tiles: Subscriptions and Bills, then Fees this year and Price changes. The Bills list further down carries its monthly total too, the same way Subscriptions does.
+
 ## 0.14.1 — 2026-10-25
 
 - Subscriptions and bills show the merchant's logo, like their charges do: on a subscription's page and in the Leaks rows, including cancelled ones. They used to show the first letter of the name. A merchant without a logo shows its category icon.
