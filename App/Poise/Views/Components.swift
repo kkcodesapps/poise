@@ -63,7 +63,12 @@ struct MerchantCircle: View {
         if let logoURL, let url = URL(string: logoURL) {
             ZStack {
                 // Memory first, so a logo seen before draws on the first frame instead of after a fetch.
-                if let image = loaded ?? LogoCache.shared.cached(url) { Image(uiImage: image).resizable().scaledToFill() }
+                if let image = loaded ?? LogoCache.shared.cached(url) {
+                    // Plaid's logos are made for a circle. Brand logos we fetched are not — some run to the edges, some
+                    // are black on clear — so they sit inset on white, where every one of them reads, light mode or dark.
+                    if LogoCache.isBrandMark(url) { Color.white; Image(uiImage: image).resizable().scaledToFit().padding(size * 0.15) }
+                    else { Image(uiImage: image).resizable().scaledToFill() }
+                }
                 else { IconCircle(symbol: symbol, size: size, fill: fill, color: color, dashed: dashed) }
             }
             .task(id: logoURL) { loaded = await LogoCache.shared.image(for: url) }
@@ -301,6 +306,38 @@ struct SecondaryButtonStyle: ButtonStyle {
     }
 }
 
+/// A small pill answering the row above it: accent for "this is fine", plain for "show me".
+struct AnswerButtonStyle: ButtonStyle {
+    var primary = false
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(primary ? Theme.Accent.default : Theme.Text.primary)
+            .padding(.horizontal, 14).frame(minHeight: 32)
+            .background((primary ? Theme.Accent.subtle : Theme.Bg.subtle).opacity(configuration.isPressed ? 0.6 : 1), in: Capsule())
+            .contentShape(Capsule())
+    }
+}
+
+/// What just happened, and the way back, for a few seconds at the bottom of the screen.
+struct UndoToast: View {
+    let message: String
+    let undo: () -> Void
+    var body: some View {
+        HStack(spacing: Theme.Spacing.s16) {
+            Text(message).font(Theme.Font.subhead).foregroundStyle(Theme.Text.primary).lineLimit(2)
+            Spacer(minLength: 8)
+            Button("Undo", action: undo).font(Theme.Font.subheadStrong).foregroundStyle(Theme.Accent.default)
+        }
+        .padding(.horizontal, Theme.Spacing.s16).padding(.vertical, Theme.Spacing.s12)
+        .background(Theme.Bg.elevated, in: RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous).strokeBorder(Theme.Border.subtle))
+        .shadow(color: .black.opacity(0.18), radius: 16, y: 6)
+        .padding(.horizontal, Theme.Spacing.s16)
+    }
+}
+
+extension ButtonStyle where Self == AnswerButtonStyle { static var answer: AnswerButtonStyle { AnswerButtonStyle() }; static var answerPrimary: AnswerButtonStyle { AnswerButtonStyle(primary: true) } }
 extension ButtonStyle where Self == PrimaryButtonStyle { static var primary: PrimaryButtonStyle { PrimaryButtonStyle() } }
 extension ButtonStyle where Self == GhostButtonStyle { static var ghost: GhostButtonStyle { GhostButtonStyle() }; static func ghost(_ color: Color) -> GhostButtonStyle { GhostButtonStyle(color: color) } }
 extension ButtonStyle where Self == SecondaryButtonStyle { static var secondary: SecondaryButtonStyle { SecondaryButtonStyle() }; static var secondaryCompact: SecondaryButtonStyle { SecondaryButtonStyle(compact: true) } }

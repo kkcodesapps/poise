@@ -4,9 +4,14 @@ import PoiseKit
 /// Money leaving silently: price creep, renewals coming up, every subscription, fees this year.
 struct LeaksView: View {
     @Environment(AppModel.self) private var model
+    @State private var undo: PendingUndo?
+
+    struct PendingUndo { let id = UUID(); let message: String; let revert: @MainActor () async -> Void }
 
     private var subscriptions: [RecurringStream] { model.streams.filter { $0.kind == .subscription } }
     private var monthly: Decimal { subscriptions.reduce(0) { $0 + monthlyEquivalent($1) } }
+    private var bills: [RecurringStream] { model.streams.filter { $0.kind == .bill } }
+    private var billsMonthly: Decimal { bills.reduce(0) { $0 + monthlyEquivalent($1) } }
     private var priceUps: [RecurringStream] { model.streams.filter { $0.priceWentUp && $0.kind != .income } }
     private var renewals: [RecurringStream] {
         model.streams.filter { $0.cadence == .annual && (Calendar.current.dateComponents([.day], from: .now, to: $0.nextExpected).day ?? 99) <= 30 }
@@ -20,20 +25,38 @@ struct LeaksView: View {
                     if !model.looksLinked {
                         EmptyStateView(symbol: "drop", title: "Leaks show up here", body: "Link a bank and Poise will find subscriptions, price changes, renewals and fees.")
                     } else {
-                        HStack(spacing: 8) {
-                            tile("SUBSCRIPTIONS", value: monthly.money + "/mo")
-                            tile("FEES THIS YEAR", value: model.fees.total.money)
-                            let moved = priceUps.count + model.pricesMovedLately.filter { $0.direction == .up }.count
-                            Button { model.showPricesList(filter: "up") } label: { tile("PRICE CHANGES", value: "\(moved)", color: moved == 0 ? Theme.Text.primary : Theme.Status.track) }.buttonStyle(.plain)
+                        Grid(horizontalSpacing: 8, verticalSpacing: 8) {
+                            GridRow {
+                                tile("SUBSCRIPTIONS", value: monthly.money + "/mo")
+                                tile("BILLS", value: billsMonthly.money + "/mo")
+                            }
+                            GridRow {
+                                tile("FEES THIS YEAR", value: model.fees.total.money)
+                                let moved = priceUps.count + model.pricesMovedLately.filter { $0.direction == .up }.count
+                                Button { model.showPricesList(filter: "up") } label: { tile("PRICE CHANGES", value: "\(moved)", color: moved == 0 ? Theme.Text.primary : Theme.Status.track) }.buttonStyle(.plain)
+                            }
                         }
                         .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s4)
                         if !leakInsights.isEmpty {
                             SectionHeader(title: "Worth a look")
+                            // Each one answered where it sits: "it's fine" clears it, the other opens it. A swipe used to be
+                            // the only way to clear one, and it never worked — these rows aren't in a List.
                             Card { ForEach(Array(leakInsights.enumerated()), id: \.element.id) { i, ins in
-                                Button { model.open(ins) } label: { InsightRowView(insight: ins) }.buttonStyle(.plain)
-                                    .swipeActions { Button("Got it") { model.acknowledge(ins) }.tint(Theme.Accent.default) }
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Button { model.open(ins) } label: { InsightRowView(insight: ins, showChevron: false) }.buttonStyle(.plain)
+                                    HStack(spacing: 8) {
+                                        Button { answer(ins) } label: {
+                                            HStack(spacing: 5) { Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)); Text(answers(ins).yes) }
+                                        }
+                                        .buttonStyle(.answerPrimary)
+                                        Button(answers(ins).look) { model.open(ins) }.buttonStyle(.answer)
+                                    }
+                                    .padding(.leading, Theme.Spacing.s16 + 36 + Theme.Spacing.s12).padding(.top, -4).padding(.bottom, Theme.Spacing.s12)
+                                }
                                 if i < leakInsights.count - 1 { RowDivider() }
-                            } }.padding(.horizontal, Theme.Spacing.s16)
+                            } }
+                            .animation(.snappy, value: leakInsights.map(\.id))
+                            .padding(.horizontal, Theme.Spacing.s16)
                         }
                         if !priceUps.isEmpty {
                             SectionHeader(title: "Price went up")
@@ -49,9 +72,8 @@ struct LeaksView: View {
                         } else {
                             list(subscriptions.sorted { $0.amount > $1.amount })
                         }
-                        let bills = model.streams.filter { $0.kind == .bill }
                         if !bills.isEmpty {
-                            SectionHeader(title: "Bills")
+                            SectionHeader(title: "Bills · \(billsMonthly.money)/mo")
                             list(bills)
                         }
                         if !model.endedStreams.isEmpty {
@@ -83,7 +105,42 @@ struct LeaksView: View {
                 .padding(.bottom, Theme.Spacing.s32)
             }
             .background(Theme.Bg.base)
+            .overlay(alignment: .bottom) {
+                if let undo {
+                    UndoToast(message: undo.message) {
+                        let revert = undo.revert
+                        withAnimation(.snappy) { self.undo = nil }
+                        Task { await revert() }
+                    }
+                    .padding(.bottom, Theme.Spacing.s12)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .task(id: undo.id) {
+                        try? await Task.sleep(for: .seconds(5))
+                        if self.undo?.id == undo.id { withAnimation(.snappy) { self.undo = nil } }
+                    }
+                }
+            }
+            .sensoryFeedback(.success, trigger: undo?.id) { _, new in new != nil }
             .navigationTitle("Leaks")
+        }
+    }
+
+    /// The two answers a row offers, and what the toast says after the first.
+    private func answers(_ i: Insight) -> (yes: String, look: String, done: String) {
+        switch i.kind {
+        case .duplicate: ("Both are real", "Look into it", "Marked both charges as real")
+        case .cancelledCharge: ("I signed back up", "Look into it", "Counting it again")
+        case .fee: ("Got it", "See the charge", "Fee noted")
+        case .priceMoved: ("Expected", "See it", "Price change marked expected")
+        default: ("Expected", "Look into it", "Marked as expected")
+        }
+    }
+
+    private func answer(_ ins: Insight) {
+        let message = answers(ins).done
+        Task {
+            let revert = await model.settle(ins)
+            withAnimation(.snappy) { undo = PendingUndo(message: message, revert: revert) }
         }
     }
 
