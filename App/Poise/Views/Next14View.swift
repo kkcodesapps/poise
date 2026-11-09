@@ -137,9 +137,14 @@ struct Next14View: View {
             VStack(alignment: .leading, spacing: 2) {
                 if day.lines.isEmpty { Text("Nothing due").font(Theme.Font.footnote).foregroundStyle(Theme.Text.tertiary) }
                 ForEach(Array(day.lines.enumerated()), id: \.offset) { _, line in
-                    // A card's charge names the card and stays grey: it's the statement that leaves checking.
-                    Text("\(line.name) · \(line.amount > 0 ? "+" : "")\(line.amount.money2)" + (line.viaCard.map { " · \($0)" } ?? ""))
-                        .font(Theme.Font.footnote).foregroundStyle(line.viaCard != nil ? Theme.Text.tertiary : line.amount > 0 ? Theme.Money.in : Theme.Text.secondary).lineLimit(1)
+                    // A card's charge names the card and stays grey: it's the statement that leaves checking. A long name gives
+                    // way before the amount does.
+                    HStack(spacing: 0) {
+                        Text(line.name).lineLimit(1)
+                        Text(" · \(line.amount > 0 ? "+" : "")\(line.amount.money2)").fixedSize()
+                        if let card = line.viaCard { Text(" · \(card)").lineLimit(1) }
+                    }
+                    .font(Theme.Font.footnote).foregroundStyle(line.viaCard != nil ? Theme.Text.tertiary : line.amount > 0 ? Theme.Money.in : Theme.Text.secondary)
                 }
             }
             .padding(.top, 3)

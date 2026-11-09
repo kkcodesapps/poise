@@ -117,6 +117,9 @@ public enum VerdictEngine {
         let payday = cal.startOfDay(for: nextPayday(input))
         let today = cal.startOfDay(for: input.now)
         var balance = input.accounts.filter { $0.role == .spending }.reduce(Decimal(0)) { $0 + $1.balance }
+        // A card payment checking hasn't caught up with yet is money already spoken for (Next 14 counts it today too).
+        balance -= CashflowEngine.paymentsInFlight(accounts: input.accounts, transactions: input.transactions, now: input.now, calendar: cal)
+            .reduce(Decimal(0)) { $0 + $1.amount }
 
         var byDay: [Date: Decimal] = [:]
         // The same picture as Next 14: card charges settle through the statement, and the statement leaves checking.

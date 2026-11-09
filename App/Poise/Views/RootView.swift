@@ -42,8 +42,10 @@ struct RootView: View {
         .fullScreenCover(isPresented: $model.showReview) { WeeklyReviewView() }
         .overlay { if model.onboarding != nil { OnboardingView().transition(.opacity) } }
         .overlay { if model.isLocked { LockScreen() } }
+        .overlay { if let user = model.signedOut { SignedOutView(user: user).transition(.opacity) } }
         .overlay { if model.launch != .ready { LaunchView().transition(.opacity) } }
         .animation(.easeInOut(duration: 0.3), value: model.launch)
+        .animation(.easeInOut(duration: 0.3), value: model.signedOut)
         .animation(.easeInOut(duration: 0.3), value: model.onboarding == nil)
         .alert("Something went wrong", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }

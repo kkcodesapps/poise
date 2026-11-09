@@ -221,6 +221,33 @@ private struct PaydaySheet: View {
     }
 }
 
+/// A phone that had someone signed in found the session gone (Figma §40). Poise never starts a new account on its own
+/// here: it says what happened, and "Start over" is the only way to a new one.
+struct SignedOutView: View {
+    @Environment(AppModel.self) private var model
+    let user: LastUser
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Spacer().frame(height: 96)
+            PoiseMark()
+            Text("You’ve been\nsigned out.").font(Theme.Font.displayLG).foregroundStyle(Theme.Text.primary).padding(.top, Theme.Spacing.s24)
+            Text(user.onAppleID
+                 ? "Your accounts, charges and settings are all still here. Sign in with Apple and Poise opens right where you left off."
+                 : "This phone’s account was never saved to an Apple ID, so Poise can’t open it again on its own. Nothing has been deleted.")
+                .font(Theme.Font.body).foregroundStyle(Theme.Text.secondary).padding(.top, Theme.Spacing.s24)
+            Spacer()
+            AppleSignInButton(height: 50) { Task { await model.signedBackIn() } }
+            Text(user.onAppleID ? "Use the same Apple ID you signed in with before." : "Sign in with Apple to start an account you can always get back into.")
+                .font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary).multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.top, Theme.Spacing.s12)
+            Button("Start over with a new account") { Task { await model.startOver() } }.buttonStyle(.ghost).padding(.top, Theme.Spacing.s4)
+        }
+        .padding(.horizontal, Theme.Spacing.s24).padding(.bottom, Theme.Spacing.s8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.Bg.base)
+    }
+}
+
 /// The "P" mark, as on the launch screen and the lock screen.
 struct PoiseMark: View {
     var size: CGFloat = 72

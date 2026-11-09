@@ -89,6 +89,43 @@ struct PaceAndInsightTests {
         #expect(alone[0].lines.map(\.amount) == [Fix.money("-2956.87")] && !alone[0].hasIncome)
     }
 
+    @Test func aCardPaymentCheckingHasntSeenYetLeavesToday() {
+        // Apple Card shows the payment on the 27th; Chase takes it on the 28th. Last month's pair says this card is paid
+        // from checking, so on the 27th the payment is money already leaving — today, in the balance, and in Ahead.
+        let today = Fix.day(2026, 10, 27)
+        let card = Account(id: "apple", name: "Apple Card", role: .credit, current: Fix.money("5454.55"))
+        let chk = Fix.checking
+        let lastCard = Transaction(id: "sep-card", accountID: card.id, amount: Fix.money("3694.79"), merchant: "Bill Payment", date: Fix.day(2026, 9, 27), kind: .ccPayment, pairID: "sep-cash")
+        let lastCash = Transaction(id: "sep-cash", accountID: chk.id, amount: Fix.money("-3694.79"), merchant: "APPLECARD GSBANK PAYMENT", date: Fix.day(2026, 9, 28), kind: .ccPayment, pairID: "sep-card")
+        let paid = Transaction(id: "oct-card", accountID: card.id, amount: Fix.money("3071.12"), merchant: "Bill Payment", date: today, kind: .ccPayment)
+        let rows = [lastCard, lastCash, paid]
+
+        let days = CashflowEngine.nextDays(accounts: [chk, card], streams: [], transactions: rows, now: today, calendar: Fix.calendar)
+        #expect(days[0].lines.map(\.name) == ["Apple Card payment"])
+        #expect(days[0].cashMoved == Fix.money("-3071.12"))
+        #expect(days[0].balanceAfter == Fix.money("1455") - Fix.money("3071.12"))
+        #expect(days[1].balanceAfter == days[0].balanceAfter)                                    // counted once, not again tomorrow
+        let input = VerdictInput(accounts: [chk, card], transactions: rows, streams: [], now: today, nextPayday: Fix.day(2026, 11, 5), calendar: Fix.calendar)
+        #expect(VerdictEngine.ahead(input).amount == Fix.money("1455") - Fix.money("3071.12"))
+
+        // The 28th: Chase has taken it. The balance already shows it, so nothing is subtracted twice.
+        var landed = paid; landed.pairID = "oct-cash"
+        let cash = Transaction(id: "oct-cash", accountID: chk.id, amount: Fix.money("-3071.12"), merchant: "APPLECARD GSBANK PAYMENT", date: Fix.day(2026, 10, 28), kind: .ccPayment, pairID: "oct-card")
+        let after = CashflowEngine.nextDays(accounts: [chk, card], streams: [], transactions: [lastCard, lastCash, landed, cash], now: Fix.day(2026, 10, 28), calendar: Fix.calendar)
+        #expect(after[0].lines.isEmpty && after[0].balanceAfter == Fix.money("1455"))
+        // The same withdrawal before the pairing has run still counts as the payment arriving.
+        let unpaired = CashflowEngine.nextDays(accounts: [chk, card], streams: [], transactions: [lastCard, lastCash, paid, Transaction(id: "x", accountID: chk.id, amount: Fix.money("-3071.12"), merchant: "APPLECARD", date: Fix.day(2026, 10, 28), kind: .spend)],
+                                               now: Fix.day(2026, 10, 28), calendar: Fix.calendar)
+        #expect(unpaired[0].lines.isEmpty)
+        // Four days on, the pairing wouldn't match it anymore, so it's left alone rather than risk counting it twice.
+        #expect(CashflowEngine.nextDays(accounts: [chk, card], streams: [], transactions: rows, now: Fix.day(2026, 10, 31), calendar: Fix.calendar)[0].lines.isEmpty)
+        // A card never paid from an account Poise can see: the money isn't coming out of this checking.
+        #expect(CashflowEngine.nextDays(accounts: [chk, card], streams: [], transactions: [paid], now: today, calendar: Fix.calendar)[0].lines.isEmpty)
+        // A refund landing on the card is not a payment.
+        let refund = Transaction(id: "r", accountID: card.id, amount: Fix.money("60.16"), merchant: "Gap", date: today, kind: .refund)
+        #expect(CashflowEngine.paymentsInFlight(accounts: [chk, card], transactions: [lastCard, lastCash, refund], now: today, calendar: Fix.calendar).isEmpty)
+    }
+
     @Test func appleCardStatementIsRebuiltFromPostedRows() {
         // Due Sep 30 → the August cycle. Charges add, the refund subtracts, the Aug 27 payment is before the close (it paid
         // July's statement), pending rows don't count yet, and September's charges belong to the next statement.
