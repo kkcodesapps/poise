@@ -394,3 +394,7 @@ s3_secret_key = "env(S3_SECRET_KEY)"
 
 [functions.plaid-webhook]
 verify_jwt = false
+
+# Called by pg_cron with the shared cron key, not a user's session; a deploy without this turns the hourly job off.
+[functions.refresh-all]
+verify_jwt = false
