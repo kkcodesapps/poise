@@ -5,6 +5,7 @@ import { admin } from "../_shared/db.ts";
 import { upsertAccounts, type ItemRow } from "../_shared/sync.ts";
 import { updateStatements } from "../_shared/liabilities.ts";
 import { recordConsent } from "../_shared/itemdiag.ts";
+import { resolveLogos } from "../_shared/logos.ts";
 
 // Freshness without anyone asking for it. A schedule calls this every hour of the waking day; it asks each bank for
 // anything new, and Plaid's webhook brings the rows and sends the push — so a charge reaches the phone with the app
@@ -26,10 +27,13 @@ Deno.serve(async (req) => {
   if (req.headers.get("x-cron-key") !== env("CRON_KEY")) return json({ error: "unauthorized" }, 401);
 
   const hour = hourIn(WAKING.zone);
-  const force = new URL(req.url).searchParams.get("force") === "1";
-  if (!force && (hour < WAKING.from || hour > WAKING.to)) return json({ skipped: "asleep", hour });
-
+  const params = new URL(req.url).searchParams;
+  const force = params.get("force") === "1";
   const db = admin();
+  // Merchant logos ride along every hour, banks asleep or not. `?logos=N` runs only that, N at a time, for a backfill.
+  if (params.has("logos")) return json({ logos: await resolveLogos(db, Number(params.get("logos")) || undefined) });
+  if (!force && (hour < WAKING.from || hour > WAKING.to)) return json({ skipped: "asleep", hour, logos: await resolveLogos(db).catch((e) => String(e)) });
+
   const { data: items } = await db.from("items")
     .select("id, user_id, provider_item_id, access_token_enc, sync_cursor, last_refreshed_at, status")
     .eq("provider", "plaid").neq("status", "error");
@@ -56,5 +60,5 @@ Deno.serve(async (req) => {
       if (e instanceof PlaidError && e.code === "ITEM_LOGIN_REQUIRED") await db.from("items").update({ status: "relink" }).eq("id", item.id);
     }
   }
-  return json({ hour, results });
+  return json({ hour, results, logos: await resolveLogos(db).catch((e) => String(e)) });
 });

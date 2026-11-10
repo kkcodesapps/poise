@@ -4,7 +4,9 @@ import { admin, userFrom } from "../_shared/db.ts";
 
 // An anonymous user just signed in with Apple. The caller holds BOTH sessions (new one in the header, old one in the body),
 // which is the proof of ownership: move every row to the permanent user and retire the anonymous one.
-const TABLES = ["items", "accounts", "transactions", "merchant_rules", "streams", "insights", "devices", "categories", "watches"];
+//
+// The move itself is `migrate_user` in SQL: one transaction, and every table with a user_id, so nothing is left on the
+// anonymous user to be cascade-deleted with it (Amazon order items were, by the table list this used to keep).
 
 Deno.serve(async (req) => {
   const user = await userFrom(req);
@@ -18,15 +20,8 @@ Deno.serve(async (req) => {
   if (!prev.user.is_anonymous) return json({ error: "previous session is not anonymous" }, 403);
 
   const db = admin();
-  let moved = 0;
-  for (const table of TABLES) {
-    const { count, error } = await db.from(table).update({ user_id: user.id }, { count: "exact" }).eq("user_id", prev.user.id);
-    if (error) return json({ error: error.message, table }, 500);
-    moved += count ?? 0;
-  }
-  // Settings: keep the anonymous user's choices if the new user has none yet.
-  const { data: existing } = await db.from("settings").select("user_id").eq("user_id", user.id).maybeSingle();
-  if (!existing) await db.from("settings").update({ user_id: user.id }).eq("user_id", prev.user.id);
+  const { data: moved, error } = await db.rpc("migrate_user", { old_id: prev.user.id, new_id: user.id });
+  if (error) return json({ error: error.message }, 500);   // nothing moved, and the anonymous user is kept
   await db.auth.admin.deleteUser(prev.user.id);
   return json({ ok: true, moved });
 });
