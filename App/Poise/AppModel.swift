@@ -236,6 +236,32 @@ final class AppModel {
         guard hasLinkedBank else { return nil }
         return CategoryBreakdown.compute(transactions: transactions.filter { !$0.excluded }, period: wherePeriod, window: whereWindow, now: .now, categories: categories)
     }
+    #if DEBUG
+    private static func whereFixture() -> [PoiseKit.Transaction] {
+        let months: [(SpendCategory, [Int], [Int])] = [   // category, days, Jul–Oct totals
+            (.home, [2], [4494, 4711, 4488, 4742]), (.shopping, [5, 6, 15, 19], [3275, 1529, 3109, 3686]),
+            (.groceries, [3, 8, 13, 20, 29], [3860, 3086, 2798, 2687]), (.dining, [1, 7, 14, 21, 28], [1414, 1557, 1001, 1448]),
+            (.transport, [10], [104, 110, 35, 348]), (.health, [22], [1087, 152, 201, 503]), (.entertainment, [16], [109, 71, 60, 70]),
+            (.tech, [9], [246, 40, 40, 55]), (.other, [24], [1873, 1412, 19, 41]), (.fun, [17], [167, 40, 0, 0]),
+        ]
+        var out: [PoiseKit.Transaction] = []
+        for (category, days, totals) in months {
+            for (m, total) in totals.enumerated() where total > 0 {
+                for day in days {
+                    let date = Calendar.current.date(from: DateComponents(year: 2026, month: 7 + m, day: day))!
+                    out.append(.init(id: "\(category)-\(m)-\(day)", accountID: "fixture", amount: -Decimal(total) / Decimal(days.count), merchant: category.rawValue.capitalized, date: date, category: category))
+                }
+            }
+        }
+        return out
+    }
+    #endif
+
+    /// The month in view against the months before it. Only a month has one: weeks and years compare to the period before.
+    var whereUsual: UsualMonth? {
+        guard hasLinkedBank, wherePeriod == .month else { return nil }
+        return UsualMonth.compute(transactions: transactions.filter { !$0.excluded }, window: whereWindow, now: .now, categories: categories)
+    }
     var whereIsCurrent: Bool { whereWindow.contains(.now) }
 
     /// The cards, in the order Home lays them out: the one carrying the most first.
@@ -325,6 +351,10 @@ final class AppModel {
             #if DEBUG
             // `-tab leaks|pace|next14` and `-review` open a screen on launch (screenshots, UI tests).
             let args = ProcessInfo.processInfo.arguments
+            // `-where-back <n>` steps Where back n periods.
+            if let i = args.firstIndex(of: "-where-back"), i + 1 < args.count, let n = Int(args[i + 1]) { stepWhere(-n) }
+            // `-where-fixture` swaps in four months of spending shaped like a real household, so Where can be checked without one.
+            if args.contains("-where-fixture") { Task { try? await Task.sleep(for: .seconds(2)); transactions = Self.whereFixture() } }
             if let i = args.firstIndex(of: "-tab"), i + 1 < args.count {
                 let want = args[i + 1].lowercased()
                 tab = Tab.allCases.first { $0.rawValue.lowercased().replacingOccurrences(of: " ", with: "") == want || "\($0)".lowercased() == want } ?? .home

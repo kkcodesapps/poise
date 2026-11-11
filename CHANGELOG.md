@@ -2,6 +2,19 @@
 
 Every TestFlight build bumps the version; the section for it becomes the build's "What to Test" notes.
 
+## 0.17.0 — 2026-11-09
+
+- The week bars are back in Month view, next to the calendar. Swipe the calendar sideways to get the month by week, with each week's total over its bar. The dots underneath show which one you're on, and "Weeks →" / "← Days" in the corner switch too. Tap a week to see its charges.
+- A category's page no longer has a separate "What moved" section. The change now sits on the merchants: under each amount, a small ▲ or ▼ against the same month last year (or a usual month while the history is short). A merchant from then that didn't come back sits dimmed at the bottom of the list.
+
+## 0.16.0 — 2026-11-06
+
+- Where's Month view has a calendar. Each day is shaded by what went out, from under $100 to $1,000 or more, so a heavy first week shows at a glance. Tap a day to see its charges. Week and Year keep their bars.
+- Categories in Month view are measured against your usual month. Each row has a dot for this month, a tick for usual, and a bar for how far the last three months ranged. The dot turns amber or green once it leaves that range.
+- The biggest gaps come first, and the rest fold into "more categories" with their total. Other always goes last, since a catch-all's usual doesn't say much.
+- A month in progress is compared with the same days of earlier months, so the 6th isn't measured against a whole month.
+- The line under the total now says what ran over usual, what came in under, and how much went in the first week when that stands out.
+
 ## 0.15.2 — 2026-11-05
 
 - If Poise ever loses your sign-in, it says so. Until now it quietly started a new, empty account, which looked like everything had been wiped. Now it shows "You've been signed out." If your account is on your Apple ID, Sign in with Apple opens it right where you left off. "Start over with a new account" is the only way a new account gets made.
