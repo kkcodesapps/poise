@@ -1,10 +1,15 @@
 import SwiftUI
 import PoiseKit
 
-/// Where the money went: a period, the strip (the chart is the navigation), and categories ranked. No pie.
+/// Where the money went: a period, the calendar or strip (the chart is the navigation), and categories ranked. No pie.
 struct WhereView: View {
     @Environment(AppModel.self) private var model
     @State private var selectedSlice: Date?
+    @State private var showAllRows = false
+    /// Which page of the month card is showing: 0 the calendar, 1 the week bars.
+    @State private var monthPage: Int? = 0
+    /// The calendar's height, so the weeks page matches it and nothing below jumps on a swipe.
+    @State private var calendarHeight: CGFloat = 0
 
     var body: some View {
         @Bindable var model = model
@@ -16,12 +21,16 @@ struct WhereView: View {
                         PricesList()
                     } else if let b = model.breakdown {
                         PeriodSwitch(period: $model.wherePeriod).padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
-                        stepper(b)
-                        headline(b)
+                        let usual = model.whereUsual
+                        let isMonth = model.wherePeriod == .month
+                        // On the month's weeks page a tap picks a week, not a day; the two share start dates, so only one list is asked.
+                        let slices = isMonth && (monthPage ?? 0) == 0 ? b.days() : b.slices
+                        stepper(b, usual)
+                        headline(b, usual)
                         lens(b)
-                        strip(b)
-                        if let sel = selectedSlice, let s = b.slices.first(where: { $0.id == sel }) { SliceCard(slice: s, accounts: model.accounts) { selectedSlice = nil } onSelect: { model.selectedTransaction = $0 }.padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12) }
-                        rows(b)
+                        if isMonth { monthPages(b) } else { strip(b) }
+                        if let sel = selectedSlice, let s = slices.first(where: { $0.id == sel }) { SliceCard(slice: s, accounts: model.accounts) { selectedSlice = nil } onSelect: { model.selectedTransaction = $0 }.padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12) }
+                        if let usual { usualRows(b, usual) } else { rows(b) }
                     } else {
                         EmptyStateView(symbol: "chart.bar.doc.horizontal", title: "Where shows up here", body: "Link a bank and Poise will break spending down by category — by week, month or year.")
                     }
@@ -31,24 +40,37 @@ struct WhereView: View {
             .background(Theme.Bg.base)
             .navigationTitle("Where")
             .navigationDestination(for: String.self) { id in CategoryDetailView(categoryID: id) }
-            .onChange(of: model.wherePeriod) { _, _ in selectedSlice = nil }
-            .onChange(of: model.whereWindow) { _, _ in selectedSlice = nil }
+            .onChange(of: model.wherePeriod) { _, _ in selectedSlice = nil; showAllRows = false }
+            .onChange(of: model.whereWindow) { _, _ in selectedSlice = nil; showAllRows = false }
+            .onChange(of: monthPage) { _, _ in selectedSlice = nil }
+            #if DEBUG
+            // `-month-page 1` opens the month card on its weeks page (screenshots).
+            .onAppear { let a = ProcessInfo.processInfo.arguments; if let i = a.firstIndex(of: "-month-page"), i + 1 < a.count { monthPage = Int(a[i + 1]) } }
+            #endif
         }
     }
 
-    private func stepper(_ b: Breakdown) -> some View {
+    private func stepper(_ b: Breakdown, _ usual: UsualMonth?) -> some View {
         HStack {
             Button { model.stepWhere(-1) } label: { IconCircle(symbol: "chevron.left", size: 36, fill: Theme.Bg.subtle, color: Theme.Text.primary) }.buttonStyle(.plain)
             Spacer()
             VStack(spacing: 1) {
                 Text(Periods.title(b.window, model.wherePeriod)).font(Theme.Font.titleSM).foregroundStyle(Theme.Text.primary)
-                Text(vsLine(b)).font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
+                Text(usual.map { vsUsual(b, $0) } ?? vsLine(b)).font(Theme.Font.caption).foregroundStyle(Theme.Text.tertiary)
             }
             Spacer()
             Button { model.stepWhere(1) } label: { IconCircle(symbol: "chevron.right", size: 36, fill: Theme.Bg.subtle, color: model.whereIsCurrent ? Theme.Text.tertiary : Theme.Text.primary) }
                 .buttonStyle(.plain).disabled(model.whereIsCurrent)
         }
         .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s8).padding(.bottom, 4)
+    }
+
+    private func vsUsual(_ b: Breakdown, _ usual: UsualMonth) -> String {
+        let gap = b.total - usual.total
+        let size = abs(gap).money, so = usual.inProgress ? "so far · " : "vs usual · "
+        if gap == 0 { return usual.inProgress ? "so far · same as usual" : "same as usual" }
+        if usual.inProgress { return "\(so)\(size) \(gap > 0 ? "more" : "less") than usual" }
+        return "\(so)\(size) \(gap > 0 ? "more" : "less")"
     }
 
     private func vsLine(_ b: Breakdown) -> String {
@@ -61,10 +83,10 @@ struct WhereView: View {
         return "\(so)same as \(label)"
     }
 
-    private func headline(_ b: Breakdown) -> some View {
+    private func headline(_ b: Breakdown, _ usual: UsualMonth?) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(b.total.money) spent").font(Theme.Font.titleLG).foregroundStyle(Theme.Text.primary)
-            Text(summary(b)).font(Theme.Font.verdictMD).foregroundStyle(Theme.Text.secondary)
+            Text(usual.map { usualSummary(b, $0) } ?? summary(b)).font(Theme.Font.verdictMD).foregroundStyle(Theme.Text.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, Theme.Spacing.s16).padding(.top, 4).padding(.bottom, Theme.Spacing.s12)
@@ -76,6 +98,32 @@ struct WhereView: View {
         if let mover = b.rows.filter({ ($0.delta ?? 0) > 0 }).max(by: { $0.delta! < $1.delta! }), mover.delta! > 0 {
             s += mover.categoryID == top.categoryID ? " and the one that moved." : "; \(mover.name) is the one that moved."
         } else { s += "." }
+        return s
+    }
+
+    /// The month in a line: what ran over, what came in under, and how front-loaded it was once the month is done.
+    private func usualSummary(_ b: Breakdown, _ usual: UsualMonth) -> String {
+        guard !b.rows.isEmpty else { return "Nothing spent in this period." }
+        let real = b.rows.filter { $0.categoryID != SpendCategory.other.rawValue }
+        let over = real.filter { usual.gap($0) > 0 }.max { usual.gap($0) < usual.gap($1) }
+        let under = real.filter { usual.gap($0) < 0 }.min { usual.gap($0) < usual.gap($1) }
+        var s: String
+        switch (over, under) {
+        case let (o?, u?):
+            s = usual.inProgress ? "\(o.name) is \(usual.gap(o).money) over usual so far, but \(u.name) is under." : "\(o.name) ran \(usual.gap(o).money) over usual, but \(u.name) came in under."
+        case let (o?, nil):
+            s = usual.inProgress ? "\(o.name) is \(usual.gap(o).money) over usual so far." : "\(o.name) ran \(usual.gap(o).money) over usual."
+        case let (nil, u?):
+            s = usual.inProgress ? "\(u.name) is \(abs(usual.gap(u)).money) under usual so far." : "\(u.name) came in \(abs(usual.gap(u)).money) under usual."
+        case (nil, nil):
+            s = "Right around usual."
+        }
+        // A quarter of a month is a week, so 40% in the first week is worth saying.
+        if !usual.inProgress, b.total > 0 {
+            let firstWeek = b.slices.first?.amount ?? 0
+            let share = NSDecimalNumber(decimal: firstWeek / b.total).doubleValue
+            if share >= 0.4 { s += " \(share.percent) went by \(b.window.start.formatted(.dateTime.month(.abbreviated))) 7." }
+        }
         return s
     }
 
@@ -155,6 +203,167 @@ struct WhereView: View {
         .padding(.horizontal, Theme.Spacing.s16)
     }
 
+    /// The month two ways, a swipe apart: the calendar first, then the week bars. Dots underneath say which.
+    private func monthPages(_ b: Breakdown) -> some View {
+        VStack(spacing: Theme.Spacing.s8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 0) {
+                    calendar(b, days: b.days())
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { calendarHeight = $0 }
+                        .containerRelativeFrame(.horizontal).id(0)
+                    weeks(b)
+                        .frame(height: calendarHeight > 0 ? calendarHeight : nil, alignment: .top)
+                        .containerRelativeFrame(.horizontal).id(1)
+                }
+                .scrollTargetLayout()
+            }
+            .scrollTargetBehavior(.paging)
+            .scrollPosition(id: $monthPage)
+            HStack(spacing: 8) {
+                ForEach(0..<2, id: \.self) { i in
+                    Circle().fill((monthPage ?? 0) == i ? Theme.Text.primary : Theme.Border.strong).frame(width: 7, height: 7)
+                }
+            }
+            .accessibilityHidden(true)
+        }
+    }
+
+    /// The small line at the top of each page: what it shows, and a way to the other one for anyone who doesn't swipe.
+    private func pageHeader(_ title: String, other: String, to page: Int) -> some View {
+        HStack {
+            Text(title).font(Theme.Font.caption2.weight(.semibold)).textCase(.uppercase).foregroundStyle(Theme.Text.tertiary)
+            Spacer()
+            Button { withAnimation(.snappy) { monthPage = page } } label: {
+                Text(page == 1 ? "\(other) →" : "← \(other)").font(Theme.Font.caption2).foregroundStyle(Theme.Text.tertiary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.bottom, Theme.Spacing.s8)
+    }
+
+    /// The month's weeks as bars, each with its total. The strip Week and Year use, given the room a whole page allows.
+    private func weeks(_ b: Breakdown) -> some View {
+        let maxAmt = b.slices.map { NSDecimalNumber(decimal: max(0, $0.amount)).doubleValue }.max() ?? 1
+        let selected = selectedSlice.flatMap { id in b.slices.first { $0.id == id } }
+        return Card(padding: Theme.Spacing.s16) {
+            VStack(spacing: 0) {
+                pageHeader("\(b.window.start.formatted(.dateTime.month(.wide))) by week", other: "Days", to: 0)
+                HStack(alignment: .bottom, spacing: 10) {
+                    ForEach(b.slices) { s in
+                        let v = NSDecimalNumber(decimal: max(0, s.amount)).doubleValue
+                        let on = selectedSlice == s.id
+                        let future = s.slice.interval.start > .now
+                        Button { withAnimation(.snappy) { selectedSlice = on ? nil : s.id } } label: {
+                            VStack(spacing: 6) {
+                                Text(future ? " " : s.amount.money).font(Theme.Font.caption).monospacedDigit()
+                                    .foregroundStyle(on ? Theme.Accent.default : Theme.Text.secondary).lineLimit(1).minimumScaleFactor(0.7)
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(on ? Theme.Accent.default : future ? Theme.Bg.subtle : Theme.Border.strong)
+                                    .frame(height: max(4, 150 * v / max(maxAmt, 1)))
+                            }
+                            .frame(maxWidth: .infinity).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).disabled(future || s.transactions.isEmpty)
+                        .accessibilityLabel("\(s.slice.longLabel), \(s.amount.money)")
+                    }
+                }
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                HStack(spacing: 10) {
+                    ForEach(b.slices) { s in
+                        Text(s.slice.label).font(Theme.Font.caption).foregroundStyle(selectedSlice == s.id ? Theme.Accent.default : Theme.Text.tertiary)
+                            .frame(maxWidth: .infinity).lineLimit(1).minimumScaleFactor(0.7)
+                    }
+                }
+                .padding(.top, 6)
+                Text(selected.map { "\($0.slice.longLabel) · \($0.amount.money)" } ?? "Tap a week to see its charges")
+                    .font(Theme.Font.caption).foregroundStyle(selected == nil ? Theme.Text.tertiary : Theme.Text.primary)
+                    .frame(maxWidth: .infinity).padding(.top, Theme.Spacing.s12)
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .padding(.horizontal, Theme.Spacing.s16)
+    }
+
+    /// The month as a calendar, each day shaded by what went out. Like the strip, tapping is how you get to the charges.
+    private func calendar(_ b: Breakdown, days: [Breakdown.SliceTotal]) -> some View {
+        let cal = Calendar.current
+        let blanks = cal.component(.weekday, from: b.window.start) - 1
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: 7)
+        let selected = selectedSlice.flatMap { id in days.first { $0.id == id } }
+        return Card(padding: Theme.Spacing.s16) {
+            pageHeader("\(b.window.start.formatted(.dateTime.month(.wide))) by day", other: "Weeks", to: 1)
+            LazyVGrid(columns: columns, spacing: 4) {
+                ForEach(Array(["S", "M", "T", "W", "T", "F", "S"].enumerated()), id: \.offset) { _, d in
+                    Text(d).font(Theme.Font.caption2).foregroundStyle(Theme.Text.tertiary).padding(.bottom, 4)
+                }
+                ForEach(0..<blanks, id: \.self) { i in Color.clear.frame(height: 38).id("blank\(i)") }
+                ForEach(days) { d in
+                    let on = selectedSlice == d.id
+                    let future = d.slice.interval.start > .now
+                    Button { withAnimation(.snappy) { selectedSlice = on ? nil : d.id } } label: {
+                        CalendarDay(day: cal.component(.day, from: d.slice.interval.start), amount: d.amount, future: future, selected: on)
+                    }
+                    .buttonStyle(.plain).disabled(future || d.transactions.isEmpty)
+                    .accessibilityLabel("\(d.slice.longLabel), \(d.amount.money)")
+                }
+            }
+            HStack(spacing: 4) {
+                Text("Under $100").padding(.trailing, 2)
+                ForEach(CalendarDay.steps.indices, id: \.self) { i in
+                    RoundedRectangle(cornerRadius: 3).fill(CalendarDay.steps[i].fill).frame(width: 14, height: 14)
+                }
+                Text("$1,000+").padding(.leading, 2)
+                Spacer()
+            }
+            .font(Theme.Font.caption2).foregroundStyle(Theme.Text.tertiary).padding(.top, Theme.Spacing.s12)
+            Text(selected.map { "\($0.slice.longLabel) · \($0.amount.money)" } ?? "Tap a day to see its charges")
+                .font(Theme.Font.caption).foregroundStyle(selected == nil ? Theme.Text.tertiary : Theme.Text.primary)
+                .frame(maxWidth: .infinity).padding(.top, Theme.Spacing.s12)
+        }
+        .padding(.horizontal, Theme.Spacing.s16)
+    }
+
+    /// The categories against usual, biggest gap first. The rest fold away unless folding would hide just one.
+    private func usualRows(_ b: Breakdown, _ usual: UsualMonth) -> some View {
+        let ranked = usual.ranked(b.rows)
+        let folds = ranked.count > 7
+        let shown = folds && !showAllRows ? Array(ranked.prefix(6)) : ranked
+        let hidden = ranked.dropFirst(shown.count)
+        let scale = NSDecimalNumber(decimal: usual.scale(b.rows)).doubleValue
+        return Card {
+            if ranked.isEmpty { EmptyStateView(symbol: "chart.bar.doc.horizontal", title: "Nothing spent", body: "No charges landed in this period.") }
+            else {
+                ZStack {
+                    Text("Usual").fontWeight(.semibold)
+                    HStack { Text("Less"); Spacer(); Text("More") }
+                }
+                .font(Theme.Font.caption2).foregroundStyle(Theme.Text.tertiary)
+                .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
+            }
+            ForEach(Array(shown.enumerated()), id: \.element.id) { i, r in
+                NavigationLink(value: r.categoryID) {
+                    UsualRowView(row: r, entry: usual.entry(r.categoryID), gap: usual.gap(r), standing: usual.standing(r), scale: scale, inProgress: usual.inProgress)
+                }
+                .buttonStyle(.plain)
+                if i < shown.count - 1 { RowDivider() }
+            }
+            if folds {
+                Divider().overlay(Theme.Border.subtle)
+                Button { withAnimation(.snappy) { showAllRows.toggle() } } label: {
+                    HStack(spacing: 8) {
+                        Text(showAllRows ? "Show fewer" : "\(hidden.count) more categories").font(Theme.Font.headline).foregroundStyle(Theme.Text.primary)
+                        Spacer()
+                        if !showAllRows { Text(hidden.reduce(Decimal(0)) { $0 + $1.amount }.money).font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary) }
+                        Image(systemName: showAllRows ? "chevron.up" : "chevron.down").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.Text.tertiary)
+                    }
+                    .padding(.vertical, 14).padding(.horizontal, Theme.Spacing.s16).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
+    }
+
     /// Six months of a category, for the row's trend line.
     private func trend(_ categoryID: String) -> [Double] {
         guard let h = model.history(categoryID: categoryID) else { return [] }
@@ -176,6 +385,92 @@ struct WhereView: View {
             }
         }
         .padding(.horizontal, Theme.Spacing.s16).padding(.top, Theme.Spacing.s12)
+    }
+}
+
+/// One day of the month's calendar. Five steps of spend, on fixed dollar amounts so months compare at a glance.
+struct CalendarDay: View {
+    let day: Int
+    let amount: Decimal
+    let future: Bool
+    let selected: Bool
+
+    struct Step { let from: Decimal; let fill: Color; let text: Color }
+    static let steps: [Step] = [
+        Step(from: 0, fill: Theme.Border.subtle, text: Theme.Text.primary),
+        Step(from: 100, fill: Color(hex: 0x2E3B8F), text: .white),
+        Step(from: 250, fill: Color(hex: 0x3F51BF), text: .white),
+        Step(from: 500, fill: Color(hex: 0x6E82FF), text: .white),
+        Step(from: 1000, fill: Color(hex: 0xA9B4FF), text: Color(hex: 0x1A1918)),
+    ]
+
+    var body: some View {
+        let step = Self.steps.last { amount >= $0.from } ?? Self.steps[0]
+        Text("\(day)").font(Theme.Font.captionStrong).foregroundStyle(future ? Theme.Text.tertiary : step.text)
+            .frame(maxWidth: .infinity).frame(height: 38)
+            .background(future ? Color.clear : step.fill, in: RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous))
+            .overlay {
+                if selected { RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous).strokeBorder(Theme.Text.primary, lineWidth: 2) }
+            }
+            .contentShape(Rectangle())
+    }
+}
+
+/// A category against its usual month: the dot is this month, the tick is usual, and the bar is how far earlier months ranged.
+struct UsualRowView: View {
+    let row: Breakdown.Row
+    let entry: UsualMonth.Entry
+    let gap: Decimal
+    let standing: UsualMonth.Standing
+    /// Dollars from usual to either end of the track, shared by every row.
+    let scale: Double
+    let inProgress: Bool
+
+    private var color: Color {
+        switch standing {
+        case .over: Theme.Status.track
+        case .under: Theme.Status.good
+        case .within: Theme.Text.primary
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: Theme.Spacing.s12) {
+                IconCircle(symbol: row.symbol, fill: row.lens == .wants ? Theme.Accent.subtle : Theme.Bg.subtle, color: row.lens == .wants ? Theme.Accent.default : Theme.Text.primary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.name).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1).minimumScaleFactor(0.9)
+                    Text("usually \(entry.usual.money)\(inProgress ? " by now" : "")").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(row.amount.money).font(Theme.Font.moneyMD).foregroundStyle(Theme.Text.primary)
+                    Text("\(gap < 0 ? "−" : "+")\(abs(gap).money)").font(Theme.Font.captionStrong)
+                        .foregroundStyle(standing == .within ? Theme.Text.secondary : color).lineLimit(1)
+                }
+                .fixedSize()
+            }
+            GeometryReader { geo in
+                let w = geo.size.width
+                let x = { (v: Decimal) -> CGFloat in
+                    let d = NSDecimalNumber(decimal: v - entry.usual).doubleValue
+                    return w * CGFloat(min(max((d + scale) / (scale * 2), 0), 1))
+                }
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Theme.Border.subtle).frame(height: 2)
+                    Capsule().fill(Color.primary.opacity(0.24)).frame(width: max(x(entry.high) - x(entry.low), 2), height: 6).offset(x: x(entry.low))
+                    Rectangle().fill(Theme.Text.tertiary).frame(width: 2, height: 14).offset(x: w / 2 - 1)
+                    Circle().fill(color).frame(width: 10, height: 10).offset(x: min(max(x(row.amount) - 5, 0), w - 10))
+                }
+                .frame(height: 14)
+            }
+            .frame(height: 14)
+        }
+        .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(row.name), \(row.amount.money), \(abs(gap).money) \(gap < 0 ? "under" : "over") usual")
+        .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -345,35 +640,64 @@ struct CategoryDetailView: View {
                 }
                 if let h = history {
                     CategoryHistoryCard(name: category.name, history: h, range: $range, selected: $pickedMonth).padding(.horizontal, Theme.Spacing.s16)
-                    if !h.moves.isEmpty, pickedMonth == nil {
-                        SectionHeader(title: "What moved\(h.comparedToLastYear ? " vs \(h.current.start.formatted(.dateTime.month(.abbreviated))) last year" : "") · \(h.moves.count)")
-                        Card {
-                            ForEach(Array(h.moves.enumerated()), id: \.element.id) { i, m in
-                                Button { model.selectedMerchant = .init(key: m.merchantKey) } label: { MoveRow(move: m, symbol: category.symbol, comparedToLastYear: h.comparedToLastYear) }.buttonStyle(.plain)
-                                if i < h.moves.count - 1 { RowDivider() }
-                            }
-                        }
-                        .padding(.horizontal, Theme.Spacing.s16)
-                    }
                 }
-                SectionHeader(title: pickedMonth == nil ? "Merchants" : "Merchants in \(window.start.formatted(.dateTime.month(.abbreviated)))")
+                // What moved against the comparable month sits on the merchants themselves, not in a section of its own:
+                // the change under each amount, and last time's merchants that didn't come back, dimmed, at the end.
+                let moves = pickedMonth == nil ? history?.moves ?? [] : []
+                let movesBy = Dictionary(moves.map { ($0.merchantKey, $0) }, uniquingKeysWith: { a, _ in a })
+                let shown = Array(merchants.prefix(8))
+                let shownKeys = Set(shown.map { PoiseKit.Transaction.merchantKey($0.name) })
+                let gone = moves.filter { $0.amount == 0 && !shownKeys.contains($0.merchantKey) }
+                let against = history.map { $0.comparedToLastYear ? "\($0.current.start.formatted(.dateTime.month(.abbreviated))) last year" : "a usual month" }
+                HStack(alignment: .lastTextBaseline) {
+                    Text(pickedMonth == nil ? "Merchants" : "Merchants in \(window.start.formatted(.dateTime.month(.abbreviated)))").font(Theme.Font.titleSM).foregroundStyle(Theme.Text.primary)
+                    Spacer()
+                    if !moves.isEmpty, let against { Text("vs \(against)").font(Theme.Font.footnote).foregroundStyle(Theme.Text.tertiary) }
+                }
+                .padding(.top, Theme.Spacing.s24).padding(.bottom, Theme.Spacing.s8).padding(.horizontal, Theme.Spacing.s16)
                 Card {
-                    ForEach(Array(merchants.prefix(8).enumerated()), id: \.element.id) { i, m in
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { i, m in
+                        let move = movesBy[PoiseKit.Transaction.merchantKey(m.name)]
                         Button { model.selectedMerchant = .init(key: PoiseKit.Transaction.merchantKey(m.name)) } label: {
                         HStack(spacing: Theme.Spacing.s12) {
                             ZStack { Circle().fill(Theme.Bg.subtle); Text("\(i + 1)").font(Theme.Font.captionStrong).foregroundStyle(Theme.Text.secondary) }.frame(width: 28, height: 28)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(m.name.prettyMerchant).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1)
-                                Text("\(m.count) charge\(m.count == 1 ? "" : "s") · avg \(m.average.money)").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary)
+                                Text("\(m.count) charge\(m.count == 1 ? "" : "s") · \(move?.isNew == true ? (history?.comparedToLastYear == true ? "new since last year" : "new this month") : "avg \(m.average.money)")")
+                                    .font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
                             }
                             Spacer()
-                            Text(m.amount.money).font(Theme.Font.moneyMD).foregroundStyle(Theme.Text.primary)
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(m.amount.money).font(Theme.Font.moneyMD).foregroundStyle(Theme.Text.primary)
+                                if let move { MoveDelta(delta: move.delta) }
+                            }
                             Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.Text.tertiary)
                         }
                         .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16).contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        if i < min(8, merchants.count) - 1 { RowDivider() }
+                        if i < shown.count - 1 || !gone.isEmpty { RowDivider() }
+                    }
+                    ForEach(Array(gone.enumerated()), id: \.element.id) { i, m in
+                        Button { model.selectedMerchant = .init(key: m.merchantKey) } label: {
+                        HStack(spacing: Theme.Spacing.s12) {
+                            Circle().fill(Theme.Bg.subtle).frame(width: 28, height: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(m.name.prettyMerchant).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1)
+                                Text("none this time · \((m.was ?? 0).money) \(history?.comparedToLastYear == true ? "last year" : "usually")").font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(Decimal(0).money).font(Theme.Font.moneyMD).foregroundStyle(Theme.Text.primary)
+                                MoveDelta(delta: m.delta)
+                            }
+                            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.Text.tertiary)
+                        }
+                        .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16).contentShape(Rectangle())
+                        .opacity(0.55)
+                        }
+                        .buttonStyle(.plain)
+                        if i < gone.count - 1 { RowDivider() }
                     }
                 }
                 .padding(.horizontal, Theme.Spacing.s16)
@@ -570,31 +894,11 @@ struct CategoryHistoryCard: View {
 }
 
 /// One merchant that moved, with what it was before.
-struct MoveRow: View {
-    let move: CategoryHistory.Move
-    let symbol: String
-    let comparedToLastYear: Bool
+/// A merchant's change against the comparable month, under its amount: up in amber, down in green.
+struct MoveDelta: View {
+    let delta: Decimal
     var body: some View {
-        HStack(spacing: Theme.Spacing.s12) {
-            IconCircle(symbol: symbol, size: 40)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(move.name.prettyMerchant).font(Theme.Font.headline).foregroundStyle(Theme.Text.primary).lineLimit(1)
-                Text(sub).font(Theme.Font.footnote).foregroundStyle(Theme.Text.secondary).lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(move.amount.money).font(Theme.Font.moneyMD).foregroundStyle(Theme.Text.primary)
-                Text("\(move.delta > 0 ? "▲" : "▼") \(abs(move.delta).money)").font(Theme.Font.captionStrong).foregroundStyle(move.delta > 0 ? Theme.Status.track : Theme.Status.good)
-            }
-        }
-        .padding(.vertical, Theme.Spacing.s12).padding(.horizontal, Theme.Spacing.s16).contentShape(Rectangle())
-    }
-    private var sub: String {
-        if move.amount == 0 { return "nothing this month · was \((move.was ?? 0).money)" }
-        let charges = "\(move.count) charge\(move.count == 1 ? "" : "s")"
-        if move.isNew { return "\(charges) · new \(comparedToLastYear ? "since last year" : "this month")" }
-        guard let wasCount = move.wasCount else { return charges }
-        return "\(charges) · \(wasCount) \(comparedToLastYear ? "last year" : "in a usual month")"
+        Text("\(delta > 0 ? "▲" : "▼") \(abs(delta).money)").font(Theme.Font.captionStrong).foregroundStyle(delta > 0 ? Theme.Status.track : Theme.Status.good)
     }
 }
 
