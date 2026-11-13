@@ -2,6 +2,10 @@
 
 Every TestFlight build bumps the version; the section for it becomes the build's "What to Test" notes.
 
+## 0.17.1 — 2026-11-11
+
+- Amazon charges get their order numbers again. Amazon redesigned its Payments page around Nov 2: the heading Poise looked for is gone, and older charges now load as you scroll instead of behind a "Next Page" button. Every check since then quietly read nothing, so recent Amazon charges had no order. Poise reads the new page now, and the next check fills in the ones it missed.
+
 ## 0.17.0 — 2026-11-09
 
 - The week bars are back in Month view, next to the calendar. Swipe the calendar sideways to get the month by week, with each week's total over its bar. The dots underneath show which one you're on, and "Weeks →" / "← Days" in the corner switch too. Tap a week to see its charges.

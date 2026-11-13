@@ -409,6 +409,10 @@ final class AppModel {
             }
             if let i = args.firstIndex(of: "-horizon"), i + 1 < args.count, let d = Int(args[i + 1]) { horizonDays = d }
             // `-amazon [connect|signin|connection]` opens the Amazon screens (screenshots, checks).
+            // `-amazon-dump` saves the reader's view of Amazon's order, invoice and payments pages (building a reader).
+            if args.contains("-amazon-sync") { Task { try? await Task.sleep(for: .seconds(10)); let before = raw.count; let n = await syncAmazon(maxPages: 4, items: 0); Logger(subsystem: "com.koliokolev.poise", category: "amazon").info("debug sync matched \(n, privacy: .public) of \(before, privacy: .public) charges, amazon without order \(self.raw.filter { $0.merchantKey.hasPrefix("amazon") && $0.orderRef == nil }.count, privacy: .public)") } }
+            if args.contains("-amazon-pager") { Task { try? await Task.sleep(for: .seconds(3)); await AmazonSource.shared.debugPager() } }
+            if args.contains("-amazon-dump") { Task { try? await Task.sleep(for: .seconds(3)); await AmazonSource.shared.debugDump() } }
             if let i = args.firstIndex(of: "-amazon") {
                 let which = i + 1 < args.count ? args[i + 1] : "connect"
                 showAmazon = which == "connection" ? .connection : which == "signin" ? .signIn : which == "reading" ? .reading : .connect
