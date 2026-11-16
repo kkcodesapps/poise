@@ -352,8 +352,14 @@ final class AmazonSource: NSObject {
     }
 
     /// The payments page itself, rather than a sign-in Amazon redirected us to.
+    ///
+    /// Amazon's November 2026 redesign dropped the "Transactions" heading, and with it every check came back "not the
+    /// payments page" — a silent timeout, so no order numbers at all. The list itself is the tell now: charges with
+    /// an order number and a status, or the gift-card note that heads it even when the list is empty.
     private func isPaymentsPage(_ text: String) -> Bool {
-        text.contains("Transactions") && !text.contains("Enter mobile number or email") && !text.contains("Sign in to continue")
+        guard !text.contains("Enter mobile number or email"), !text.contains("Sign in to continue") else { return false }
+        if text.contains("Transactions") || text.contains("to see gift card refunds") { return true }
+        return text.contains("Order #") && (text.contains("Charged") || text.contains("Refunded"))
     }
 
     private enum Landing { case payments, signIn, unknown }
@@ -423,13 +429,21 @@ final class AmazonSource: NSObject {
         (function () {
           var label = Array.prototype.slice.call(document.querySelectorAll('span.a-button-text, span, input, a, button'))
             .find(function (e) { return ((e.innerText || e.value || '').trim()) === 'Next Page' && !e.disabled; });
-          if (!label) { return false; }
-          var host = label.closest('.a-button') || label.closest('.a-button-inner') || label.parentElement;
-          var input = (host && host.querySelector('input[type=submit], input.a-button-input'))
-                   || (label.tagName === 'INPUT' ? label : null);
-          var target = input || label.closest('a, button');
-          if (!target) { return false; }
-          target.click();
+          if (label) {
+            var host = label.closest('.a-button') || label.closest('.a-button-inner') || label.parentElement;
+            var input = (host && host.querySelector('input[type=submit], input.a-button-input'))
+                     || (label.tagName === 'INPUT' ? label : null);
+            var target = input || label.closest('a, button');
+            if (target) { target.click(); return true; }
+          }
+          // The redesigned page has no pager: it draws ten more charges each time the last one scrolls into view, inside
+          // its own scrolling box, so moving the window does nothing. Bringing the last status line into view does.
+          var rows = Array.prototype.slice.call(document.querySelectorAll('span, div')).filter(function (e) {
+            var t = (e.innerText || '').trim();
+            return e.children.length === 0 && (t === 'Charged' || t === 'Refunded' || t === 'Pending');
+          });
+          if (!rows.length) { return false; }
+          rows[rows.length - 1].scrollIntoView({ block: 'end' });
           return true;
         })()
         """
@@ -442,6 +456,113 @@ final class AmazonSource: NSObject {
         if let error { c.resume(throwing: error) } else { c.resume() }
     }
 }
+
+#if DEBUG
+extension AmazonSource {
+    /// Saves what the reader sees on the pages a charge-to-order match could come from, to Documents/amazon-dump, so a
+    /// new reader can be built against Amazon's real text. Each file records the address Amazon ended on and whether it
+    /// was asking for a sign-in, which is the question this exists to answer. Debug builds only: `-amazon-dump`.
+    func debugDump() async {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appending(path: "amazon-dump")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let stamp = Date.now.formatted(.iso8601)
+        var n = 0
+        func grab(_ name: String, _ url: URL) async -> (text: String, html: String) {
+            n += 1
+            try? await load(url)
+            var text = "", last = ""
+            for _ in 0 ..< 24 {                                     // up to twelve seconds for the page to settle
+                try? await Task.sleep(for: .milliseconds(500))
+                text = await innerText()
+                if !text.isEmpty, text == last { break }
+                last = text
+            }
+            let html = (try? await reader.evaluateJavaScript("document.documentElement.outerHTML")) as? String ?? ""
+            let asks = await asksForCredentials(reader)
+            let head = "asked: \(url.absoluteString)\nended: \(reader.url?.absoluteString ?? "-")\nasks for credentials: \(asks)\nat: \(stamp)\n\n"
+            let base = String(format: "%02d-", n) + name
+            try? (head + text).write(to: dir.appending(path: base + ".txt"), atomically: true, encoding: .utf8)
+            try? html.write(to: dir.appending(path: base + ".html"), atomically: true, encoding: .utf8)
+            return (text, html)
+        }
+        let list = await grab("orders", URL(string: "https://www.amazon.com/your-orders/orders?timeFilter=months-3")!)
+        _ = await grab("orders-page2", URL(string: "https://www.amazon.com/your-orders/orders?timeFilter=months-3&startIndex=10")!)
+        let ids = (try? NSRegularExpression(pattern: #"\d{3}-\d{7}-\d{7}"#))?
+            .matches(in: list.html, range: NSRange(list.html.startIndex..., in: list.html))
+            .compactMap { Range($0.range, in: list.html).map { String(list.html[$0]) } } ?? []
+        var unique: [String] = []
+        for id in ids where !unique.contains(id) { unique.append(id) }
+        for id in unique.prefix(3) {
+            _ = await grab("invoice-print-\(id)", URL(string: "https://www.amazon.com/gp/css/summary/print.html?orderID=\(id)")!)
+            _ = await grab("invoice-popover-\(id)", URL(string: "https://www.amazon.com/your-orders/invoice/popover?orderId=\(id)")!)
+            _ = await grab("details-\(id)", Self.orderURL(id))
+        }
+        _ = await grab("payments", AmazonOrders.transactionsPage)
+        await releaseReader()
+        log.info("amazon dump: \(n, privacy: .public) pages to \(dir.path, privacy: .public)")
+    }
+
+    /// Payments page only: scrolls to the bottom, lists every control that could be a pager, clicks the likeliest
+    /// "next", and saves the text before and after. Debug builds only: `-amazon-pager`.
+    func debugPager() async {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appending(path: "amazon-pager")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        func save(_ name: String) async {
+            let text = await innerText()
+            let html = (try? await reader.evaluateJavaScript("document.documentElement.outerHTML")) as? String ?? ""
+            try? ("ended: \(reader.url?.absoluteString ?? "-")\n\n" + text).write(to: dir.appending(path: name + ".txt"), atomically: true, encoding: .utf8)
+            try? html.write(to: dir.appending(path: name + ".html"), atomically: true, encoding: .utf8)
+        }
+        try? await load(AmazonOrders.transactionsPage)
+        try? await Task.sleep(for: .seconds(8))
+        await save("1-loaded")
+        try? await Task.sleep(for: .seconds(8))
+        var counts: [String] = []
+        for round in 0 ..< 6 {
+            let js = """
+            (function () {
+              var all = Array.prototype.slice.call(document.querySelectorAll('span, div')).filter(function (e) { return e.children.length === 0 && (e.innerText || '').trim() === 'Charged'; });
+              if (all.length) { all[all.length - 1].scrollIntoView({block: 'end'}); }
+              window.scrollTo(0, document.documentElement.scrollHeight);
+              window.dispatchEvent(new Event('scroll'));
+              var n = (document.documentElement.outerHTML.match(/"formattedAmount"/g) || []).length;
+              return all.length + ' charged on screen, ' + n + ' in data, height ' + document.documentElement.scrollHeight + ', viewport ' + window.innerWidth + 'x' + window.innerHeight;
+            })()
+            """
+            counts.append("\(round): " + ((try? await reader.evaluateJavaScript(js)) as? String ?? "err"))
+            try? await Task.sleep(for: .seconds(4))
+        }
+        try? counts.joined(separator: "\n").write(to: dir.appending(path: "2b-scroll-rounds.txt"), atomically: true, encoding: .utf8)
+        await save("2-scrolled")
+        let js = """
+        (function () {
+          var out = [];
+          document.querySelectorAll('[role=button], button, a, [aria-label], [tabindex]').forEach(function (e) {
+            var r = e.getBoundingClientRect();
+            out.push([e.tagName, e.getAttribute('role') || '', e.getAttribute('aria-label') || '', (e.innerText || '').trim().slice(0, 40), e.getAttribute('aria-disabled') || '', Math.round(r.width) + 'x' + Math.round(r.height)].join(' | '));
+          });
+          return out.join('\\n');
+        })()
+        """
+        let controls = (try? await reader.evaluateJavaScript(js)) as? String ?? ""
+        try? controls.write(to: dir.appending(path: "3-controls.txt"), atomically: true, encoding: .utf8)
+        let click = """
+        (function () {
+          var c = Array.prototype.slice.call(document.querySelectorAll('[role=button], button, a, [aria-label]'));
+          var t = c.find(function (e) { var s = ((e.getAttribute('aria-label') || '') + ' ' + (e.innerText || '')).toLowerCase(); return s.indexOf('next page') >= 0 && e.getAttribute('aria-disabled') !== 'true'; });
+          if (!t) { return 'none'; }
+          t.click(); return t.outerHTML.slice(0, 300);
+        })()
+        """
+        let clicked = (try? await reader.evaluateJavaScript(click)) as? String ?? "error"
+        try? clicked.write(to: dir.appending(path: "4-clicked.txt"), atomically: true, encoding: .utf8)
+        try? await Task.sleep(for: .seconds(6))
+        await save("5-after-click")
+        await releaseReader()
+        log.info("amazon pager dump done")
+    }
+}
+#endif
 
 extension AmazonSource: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { finish(nil) }
