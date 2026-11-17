@@ -66,6 +66,7 @@ public enum AmazonOrders {
         let ns = text as NSString
         let whole = NSRange(location: 0, length: ns.length)
         var found: [(at: Int, marker: Marker)] = []
+        var dayNotes: [Int: String] = [:]
 
         for match in regex(dayPattern).matches(in: text, range: whole) {
             var raw = ns.substring(with: match.range)
@@ -75,6 +76,15 @@ public enum AmazonOrders {
             if !raw.contains(",") , let i = raw.lastIndex(of: " ") { raw.insert(",", at: i) }   // "Oct 21 2026"
             if let d = day.date(from: raw) ?? short.date(from: raw) {
                 found.append((match.range.location, .day(d)))
+                // Since November 2026 the descriptor shares the date's line: "Nov 09, 2026·AMZN Mktp US".
+                let end = match.range.location + match.range.length
+                if end < ns.length, ns.substring(with: NSRange(location: end, length: 1)) == "·" {
+                    let rest = NSRange(location: end + 1, length: ns.length - end - 1)
+                    let stop = ns.rangeOfCharacter(from: .newlines, options: [], range: rest)
+                    let to = stop.location == NSNotFound ? ns.length : stop.location
+                    dayNotes[match.range.location] = ns.substring(with: NSRange(location: end + 1, length: to - end - 1))
+                        .trimmingCharacters(in: .whitespaces)
+                }
             }
         }
         for match in regex(amountPattern).matches(in: text, range: whole) {
@@ -91,14 +101,18 @@ public enum AmazonOrders {
         // on a desktop layout, the one just after on a phone, but never one that belongs to a neighbouring charge.
         var orders: [AmazonOrder] = []
         var currentDay: Date?
+        var currentNote: String?
         var claimed = Set<Int>()
         for (i, entry) in found.enumerated() {
             switch entry.marker {
-            case .day(let d): currentDay = d        // heading a group on one layout, on the entry itself on the other
+            case .day(let d):                       // heading a group on one layout, on the entry itself on the other
+                currentDay = d
+                currentNote = dayNotes[entry.at]
             case .amount: break
             case .order(let id):
                 guard let currentDay, let amount = claimAmount(in: found, for: i, claimed: &claimed) else { continue }
-                orders.append(AmazonOrder(id: id, date: currentDay, amount: amount, descriptor: descriptor(after: entry.at, in: ns)))
+                orders.append(AmazonOrder(id: id, date: currentDay, amount: amount,
+                                          descriptor: currentNote ?? descriptor(after: entry.at, in: ns)))
             }
         }
         return orders
