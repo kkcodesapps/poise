@@ -41,7 +41,48 @@ Order #113-1302274-5982636
 AMZN Mktp US
 """
 
+/// The page again in November 2026: the "Transactions" heading gone, the descriptor on the date's line, the amount
+/// after the order number, and a status under it.
+private let november = """
+View gift card activity to see gift card refunds.
+Nov 09, 2026·Amazon.com
+Prime Visa••••9174
+Order #113-1176169-9548244
+-$18.99
+Charged
+Nov 08, 2026·AMZN Mktp US
+Prime Visa••••9174
+Order #113-1204713-8629835
+-$24.89
+Charged
+Oct 30, 2026·Whole Foods SCH 10276
+Prime Visa••••9174
+Order #7527feb9-1fbe-4fa8-b161-b46fd4daec4a
+-$222.62
+Charged
+Oct 29, 2026·AMZN Mktp US
+Prime Visa••••9174
+Order #113-7130720-5861006
++$281.44
+Refunded
+Oct 24, 2026·D01-5258028-7053046
+Prime Visa••••9174
+Order #D01-5258028-7053046
+-$9.99
+Charged
+"""
+
 @Suite("Amazon orders") struct AmazonOrderTests {
+
+    @Test func readsTheNovemberPaymentsPage() {
+        let orders = AmazonOrders.parse(november, calendar: Fix.calendar)
+        #expect(orders.map(\.id) == ["113-1176169-9548244", "113-1204713-8629835", "113-7130720-5861006"])
+        #expect(orders[0].amount == Fix.money("-18.99"))
+        #expect(orders[0].date == Fix.calendar.startOfDay(for: Fix.day(2026, 11, 9)))
+        #expect(orders[0].descriptor == "Amazon.com")
+        #expect(orders[1].descriptor == "AMZN Mktp US")
+        #expect(orders[2].amount == Fix.money("281.44"))
+    }
 
     @Test func readsTheOrdersOffThePaymentsPage() {
         let orders = AmazonOrders.parse(page, calendar: Fix.calendar)
